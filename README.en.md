@@ -1,31 +1,35 @@
 <table>
   <tr>
-    <td width="320" valign="middle">
-      <img src="assets/logo.png" alt="academic-search logo" width="280" />
+    <td width="220" valign="middle">
+      <img src="assets/logo.png" alt="academic-search logo" width="180" />
     </td>
     <td valign="middle">
       <h1>academic-search skill</h1>
-      <p>Academic search and paper metadata extraction for Claude Code</p>
-      <p>
-        <img src="https://img.shields.io/badge/version-v1.1.0-0f766e" alt="version" />
-        <img src="https://img.shields.io/badge/license-MIT-1f2937" alt="license" />
-        <img src="https://img.shields.io/badge/test-make%20test%20%7C%20make%20test--release-2563eb" alt="test" />
-      </p>
-      <p>
-        <a href="https://github.com/Mingyue-Cheng/academic-search/stargazers">
-          <img src="https://img.shields.io/github/stars/Mingyue-Cheng/academic-search?style=social" alt="GitHub stars" />
-        </a>
-        <a href="https://github.com/Mingyue-Cheng/academic-search/commits/main">
-          <img src="https://img.shields.io/github/last-commit/Mingyue-Cheng/academic-search" alt="last commit" />
-        </a>
-        <a href="https://github.com/Mingyue-Cheng/academic-search">
-          <img src="https://img.shields.io/badge/repo-GitHub-111827?logo=github" alt="repo link" />
-        </a>
-      </p>
-      <p><a href="README.md">简体中文</a> | English</p>
     </td>
   </tr>
 </table>
+
+<p align="center">Academic search and paper metadata extraction for Claude Code</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/version-v1.1.0-0f766e" alt="version" />
+  <img src="https://img.shields.io/badge/license-MIT-1f2937" alt="license" />
+  <img src="https://img.shields.io/badge/test-make%20test%20%7C%20make%20test--release-2563eb" alt="test" />
+</p>
+
+<p align="center">
+  <a href="https://github.com/Mingyue-Cheng/academic-search/stargazers">
+    <img src="https://img.shields.io/github/stars/Mingyue-Cheng/academic-search?style=social" alt="GitHub stars" />
+  </a>
+  <a href="https://github.com/Mingyue-Cheng/academic-search/commits/main">
+    <img src="https://img.shields.io/github/last-commit/Mingyue-Cheng/academic-search" alt="last commit" />
+  </a>
+  <a href="https://github.com/Mingyue-Cheng/academic-search">
+    <img src="https://img.shields.io/badge/repo-GitHub-111827?logo=github" alt="repo link" />
+  </a>
+</p>
+
+<p align="center"><a href="README.md">简体中文</a> | English</p>
 
 academic-search skill brings academic-oriented retrieval strategy, cross-platform metadata normalization, and browser automation support to Claude Code. It is designed for paper discovery, author analysis, citation lookup, open-access PDF retrieval, BibTeX export, and structured literature comparison across multiple sources.
 
