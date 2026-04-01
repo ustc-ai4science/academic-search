@@ -1,13 +1,7 @@
-<table border="0" cellspacing="0" cellpadding="0">
-  <tr>
-    <td width="140" valign="middle">
-      <img src="assets/logo.png" alt="academic-search" width="120" />
-    </td>
-    <td valign="middle">
-      <h1>Academic-Search Skill</h1>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="assets/logo.png" alt="academic-search" width="80" style="vertical-align:middle; margin-right:12px;" />
+  <strong style="font-size:2em; vertical-align:middle;">Academic-Search Skill</strong>
+</p>
 
 <p align="center">面向 Claude Code 的学术搜索与论文元数据提取 Skill</p>
 
