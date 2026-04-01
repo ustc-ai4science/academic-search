@@ -3,7 +3,7 @@
   <strong style="font-size:2em; vertical-align:middle;">Academic-Search Skill</strong>
 </p>
 
-<p align="center">面向 Claude Code 的学术搜索与论文元数据提取 Skill</p>
+<p align="center">想要在 Claude Code 里直接调研顶刊论文？Academic-Search Skill 帮你实现。</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-v1.2.0-0f766e" />
@@ -15,7 +15,12 @@
 
 ---
 
-给 Claude Code 装上完整学术搜索能力的 skill。覆盖 **arXiv、Semantic Scholar、Google Scholar、ACM DL、IEEE Xplore、PubMed、Papers with Code** 七大平台，支持论文检索、引用分析、PDF 获取、BibTeX 导出与多来源结果整合。
+🚀 **覆盖全**：arXiv、Semantic Scholar、Google Scholar... 七大平台火力全开。  
+📊 **功能强**：论文检索、引用追踪、BibTeX 导出、多源去重，一气呵成。  
+📑 **获取快**：PDF 级联获取，代码实现一键直达。  
+🎯 **策略精**：时效性优先排序，自带 CCF 等级标注，只看最值得看的顶会干货。
+
+> **Academic-Search：重新定义 AI 驱动的学术研究。**
 
 ## Quick Start
 
