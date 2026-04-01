@@ -267,6 +267,8 @@ academic-search/
 - **API-first**: Never simulate a browser for platforms that offer a public API — faster, more stable, no anti-bot exposure
 - **CDP is the last resort, not the default**: Only used when no reliable API exists (Google Scholar)
 - **Structured output**: All results converted to a unified schema, DOI as dedup key, directly exportable as BibTeX
+
+📋 **Case Study**: [Skill vs. No-Skill Search Comparison](docs/skill-usage-comparison.md) — A controlled experiment searching "Time Series Agent" papers with and without the skill, documenting execution paths, result differences, and key takeaways.
 - **Site knowledge reuse**: 7 platforms ship with pre-seeded operation experience; accumulated and updated across sessions
 
 ---

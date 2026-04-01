@@ -236,6 +236,8 @@ academic-search/
 ├── Makefile                          # 标准测试入口（make test / make test-release）
 ├── SKILL.md                          # 主指令（搜索哲学 + 平台矩阵 + 核心能力）
 ├── README.md
+├── docs/
+│   └── skill-usage-comparison.md    # 使用 Skill vs 未使用 Skill 的搜索对比实验
 ├── scripts/
 │   ├── cdp-proxy.mjs                 # CDP Proxy HTTP 服务（直连用户 Chrome）
 │   ├── check-deps.sh                 # 环境检查 + 自动启动 Proxy
@@ -267,6 +269,8 @@ academic-search/
 - **CDP 是兜底而非首选**：仅在没有可靠 API 时（Google Scholar）才使用 CDP
 - **结构化输出**：所有结果转为统一 schema，DOI 为主键去重，可直接导出 BibTeX
 - **站点经验复用**：预置 7 个平台的操作经验，跨 session 积累更新
+
+📋 **实验报告**：[使用 Skill vs 未使用 Skill 的搜索对比](docs/skill-usage-comparison.md) — 以 "Time Series Agent" 搜索为例，记录两次执行过程、结果差异及关键结论。
 
 ---
 
