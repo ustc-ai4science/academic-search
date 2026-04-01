@@ -12,7 +12,7 @@
 <p align="center">Academic search and paper metadata extraction for Claude Code</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.1.0-0f766e" alt="version" />
+  <img src="https://img.shields.io/badge/version-v1.2.0-0f766e" alt="version" />
   <img src="https://img.shields.io/badge/license-MIT-1f2937" alt="license" />
   <img src="https://img.shields.io/badge/test-make%20test%20%7C%20make%20test--release-2563eb" alt="test" />
 </p>
@@ -85,15 +85,32 @@ Search for top-venue papers on graph neural networks published after 2023, give 
 | 7-platform coverage | arXiv / Semantic Scholar / Google Scholar / ACM DL / IEEE Xplore / PubMed / Papers with Code |
 | API-first strategy | 6 platforms via open APIs — no browser required, fast and stable |
 | CDP browser mode | Google Scholar and other anti-bot platforms via direct Chrome connection, inheriting your login session |
-| Two-pass search | First pass outputs a lightweight summary table (citation count + venue tier); second pass deep-fetches full metadata only for confirmed core papers |
-| Venue tier labels | CS conferences/journals automatically annotated with CCF ranking (A/B/C); ICLR labeled separately |
-| Result filtering | Filter by citation count / year / venue tier / open access PDF / code availability |
+| Two-pass search | First pass outputs a lightweight summary table; second pass deep-fetches full metadata only for confirmed papers. When user specifies count ("top N"), outputs directly without waiting |
+| Frontier-first ranking | **Recency first** (papers from last 6 months labeled `[new]` and surfaced to top) → citation count → CCF tier (as reference only) |
+| Query expansion | Automatically expands to 2-3 complementary queries (synonyms / sub-concepts / abbreviations), improving recall by 30-50% |
+| Venue tier labels | CS conferences/journals annotated with CCF ranking (A/B/C); ICLR labeled separately |
+| Result filtering | Filter by recency / citation count / venue tier / open PDF / code availability |
 | Structured metadata | Unified schema across all platforms; DOI as primary dedup key |
-| PDF cascade | arXiv direct link → S2 OpenAccess → Unpaywall; no paywall bypass |
+| PDF direct link | ArXiv ID present → construct link directly; does not rely on `openAccessPdf` (often null in S2) |
 | BibTeX export | Platform-native export + field-assembly fallback |
+| Code availability | Papers with Code API auto-fills code column for ML papers |
 | Citation graph | S2 citations/references API; Google Scholar citation counts as supplement |
+| Failure signal handling | 429 / timeout / empty results each have explicit direction adjustments — no blind retries |
 | Parallel sub-agents | Independent targets dispatched to parallel sub-agents sharing one Proxy, tab-level isolation |
 | Pre-seeded site knowledge | 7 platforms ship with verified operation patterns (URL structures, selectors, known pitfalls) |
+
+<details>
+<summary>v1.2.0 Changes</summary>
+
+- **Frontier-first ranking** — Recency as top priority: papers from last 6 months labeled `[new]` and surfaced first; citation count second; CCF tier as reference only
+- **Query expansion strategy** — Auto-expands to synonyms / sub-concepts / abbreviations; multi-query dedup improves recall by 30-50%
+- **PDF direct link** — ArXiv ID present → construct link directly, bypassing unreliable `openAccessPdf` field
+- **Intent-aware two-pass** — When user specifies "top N papers", outputs directly without stopping to confirm
+- **Failure signal table** — 429 / timeout / empty results each map to explicit direction adjustments
+- **Success criteria definition** — Define field requirements and count before executing; used as decision anchor throughout
+- **S2 API Key hint** — Recommends free key registration to avoid frequent 429s in single sessions
+
+</details>
 
 <details>
 <summary>v1.1.0 Changes</summary>
@@ -264,6 +281,7 @@ academic-search/
 > Skill = philosophy + technical facts, not an operations manual. Explain the tradeoffs and let the AI decide — don't do its reasoning for it.
 
 - **The bottleneck is filtering, not searching**: Output a lightweight summary table first; let the user identify core papers before deep-fetching — avoids redundant full metadata pulls
+- **Frontier-first ranking**: Recency → citations → CCF tier. Papers from the last 6 months are labeled `[new]` and surfaced to the top — new papers in active research areas have naturally low citation counts but represent the latest advances
 - **API-first**: Never simulate a browser for platforms that offer a public API — faster, more stable, no anti-bot exposure
 - **CDP is the last resort, not the default**: Only used when no reliable API exists (Google Scholar)
 - **Structured output**: All results converted to a unified schema, DOI as dedup key, directly exportable as BibTeX

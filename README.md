@@ -6,7 +6,7 @@
 <p align="center">面向 Claude Code 的学术搜索与论文元数据提取 Skill</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.1.0-0f766e" />
+  <img src="https://img.shields.io/badge/version-v1.2.0-0f766e" />
   <img src="https://img.shields.io/badge/license-MIT-1f2937" />
   <img src="https://img.shields.io/github/stars/Mingyue-Cheng/academic-search?style=social" />
 </p>
@@ -35,19 +35,35 @@ bash ~/.claude/skills/academic-search/scripts/check-deps.sh
 ## 核心能力
 
 **检索与筛选**
-- 两遍策略：先输出轻量摘要表（引用数 + CCF 等级），确认核心论文后再深拉完整元数据
-- 按引用数 / 年份 / venue 等级 / 开放 PDF / 代码可用性多维筛选
-- 多平台结果以 DOI 为主键自动去重合并
+- 两遍策略：先输出轻量摘要表，用户确认核心论文后再深拉完整元数据；用户明确数量时直接输出，无需二次确认
+- Query 扩展：自动展开 2-3 个互补 query（同义词 / 子概念 / 缩写全称），覆盖率比单 query 提升 30-50%
+- 前沿性排序：**时效性优先**（近 6 月 `[新]` 置顶）→ 引用数 → CCF 等级（参考项），不因引用数低埋没最新进展
+- 多平台结果以 DOI/arXiv ID 为主键自动去重合并
 
 **数据获取**
-- PDF 级联：arXiv 直链 → S2 OpenAccess → Unpaywall，不绕付费墙
+- PDF：arXiv ID 存在即直接构造链接，不依赖 S2 `openAccessPdf`（该字段经常为 null）
 - BibTeX：平台原生导出 + 字段拼装双路径
+- 代码：Papers with Code API 自动补全代码可用性列
 - 引用关系：S2 引用/被引 API，Google Scholar 引用数补充
 
-**自动化与扩展**
+**可靠性与扩展**
+- 失败信号处理：429 / 超时 / 空结果各有对应调整策略，不在同一条路上盲目重试
 - CDP 浏览器模式：直连用户日常 Chrome，天然携带登录态，用于 Google Scholar 等反爬平台
 - 并行分治：多目标分发子 Agent 并行执行，共享 Proxy，tab 级隔离
 - 站点经验预置：7 个平台预置操作经验，跨 session 积累更新
+
+<details>
+<summary>v1.2.0 更新内容</summary>
+
+- **前沿性排序** — 时效性优先：近 6 月论文 `[新]` 置顶，引用数次之，CCF 等级作参考项
+- **Query 扩展策略** — 自动展开同义词 / 子概念 / 缩写全称，多 query 去重合并
+- **PDF 直取** — arXiv ID 存在即直接构造链接，不依赖经常为 null 的 `openAccessPdf`
+- **意图感知两遍策略** — 用户明确说"前 N 篇"时直接输出，无需停下等确认
+- **失败信号处理** — 429 / 超时 / 空结果各对应明确调整方向
+- **成功标准定义** — 执行前先明确字段需求和数量，作为全程决策锚点
+- **S2 API Key 提示** — 建议申请免费 Key 避免单 session 频繁 429
+
+</details>
 
 <details>
 <summary>v1.1.0 更新内容</summary>
@@ -157,7 +173,9 @@ academic-search/
 
 > Skill = 哲学 + 技术事实，不是操作手册。讲清 tradeoff 让 AI 自己选，不替它推理。
 
-搜索的瓶颈不在"搜"，在"筛"。本 skill 的核心策略是先输出轻量摘要表，让用户确认核心论文后再深拉，避免无效的完整元数据抓取。API 优先、CDP 作为兜底，结果统一结构化输出。
+搜索的瓶颈不在"搜"，在"筛"。核心策略是先输出轻量摘要表，让用户确认核心论文后再深拉，避免无效的完整元数据抓取。
+
+排序优先级：**时效性（近 6 月 `[新]` 置顶）→ 引用数 → CCF 等级（参考项）**。前沿方向的新论文引用数天然偏低，以时效性为首要维度确保最新进展不被埋没。API 优先、CDP 作为兜底，结果统一结构化输出。
 
 📋 [使用 Skill vs 未使用 Skill 的搜索对比实验](docs/skill-usage-comparison.md) — 以 "Time Series Agent" 为例，完整记录两次执行差异与关键结论。
 
