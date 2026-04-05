@@ -71,7 +71,7 @@ Search for top-venue papers on graph neural networks published after 2023, give 
 
 ## Overview
 
-- **Platform coverage**: arXiv, Semantic Scholar, Google Scholar, ACM DL, IEEE Xplore, PubMed, and Papers with Code
+- **Platform coverage**: arXiv, Semantic Scholar, Google Scholar, ACM DL, IEEE Xplore, PubMed, Papers with Code, and CNKI
 - **Operating principles**: API-first, structured-output-first, CDP only when necessary
 - **Typical tasks**: keyword search, author page parsing, citation analysis, PDF/BibTeX retrieval, and batch literature review
 - **Target users**: developers and researchers using Claude Code for academic search and research assistance
@@ -89,7 +89,7 @@ Search for top-venue papers on graph neural networks published after 2023, give 
 
 | Capability | Description |
 |-----------|-------------|
-| 7-platform coverage | arXiv / Semantic Scholar / Google Scholar / ACM DL / IEEE Xplore / PubMed / Papers with Code |
+| 8-platform coverage | arXiv / Semantic Scholar / Google Scholar / ACM DL / IEEE Xplore / PubMed / Papers with Code / CNKI |
 | API-first strategy | 6 platforms via open APIs — no browser required, fast and stable |
 | CDP browser mode | Google Scholar and other anti-bot platforms via direct Chrome connection, inheriting your login session |
 | Two-pass search | First pass outputs a lightweight summary table; second pass deep-fetches full metadata only for confirmed papers. When user specifies count ("top N"), outputs directly without waiting |
@@ -104,7 +104,7 @@ Search for top-venue papers on graph neural networks published after 2023, give 
 | Citation graph | S2 citations/references API; Google Scholar citation counts as supplement |
 | Failure signal handling | 429 / timeout / empty results each have explicit direction adjustments — no blind retries |
 | Parallel sub-agents | Independent targets dispatched to parallel sub-agents sharing one Proxy, tab-level isolation |
-| Pre-seeded site knowledge | 7 platforms ship with verified operation patterns (URL structures, selectors, known pitfalls) |
+| Pre-seeded site knowledge | 8 platforms ship with verified operation patterns (URL structures, selectors, known pitfalls) |
 
 <details>
 <summary>v1.2.0 Changes</summary>
@@ -229,6 +229,7 @@ Check Google Scholar for the citation count of "Attention Is All You Need"
 | ACM DL | WebFetch + Jina | No |
 | IEEE Xplore | WebFetch / Jina / Official API | No |
 | Google Scholar | CDP browser | **Yes** |
+| CNKI | CDP browser | **Yes** |
 
 ---
 
@@ -267,7 +268,7 @@ academic-search/
 │   ├── self-test.sh                  # Base local regression test (requires Chrome remote debugging)
 │   └── release-test.sh               # Pre-release regression test (concurrency / invalid target / binary response)
 └── references/
-    ├── api-cookbook.md               # 7-platform API call reference (curl examples + field mappings)
+    ├── api-cookbook.md               # 8-platform call reference (curl examples + field mappings)
     ├── metadata-schema.md            # Cross-platform unified metadata schema + dedup rules + BibTeX templates
     ├── venue-rankings.md             # CS conference/journal CCF tier reference
     ├── cdp-api.md                    # CDP Proxy HTTP API complete reference
@@ -278,7 +279,8 @@ academic-search/
         ├── dl.acm.org.md
         ├── ieeexplore.ieee.org.md
         ├── pubmed.ncbi.nlm.nih.gov.md
-        └── paperswithcode.com.md
+        ├── paperswithcode.com.md
+        └── cnki.net.md
 ```
 
 ---

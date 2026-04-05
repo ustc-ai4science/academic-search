@@ -20,9 +20,10 @@
 - `2026-04-02` 发布 `v1.2.0`：新增前沿性优先排序、Query 扩展、PDF 直取、意图感知两遍搜索
 - `2026-04-02` 新增案例文档：[使用 Skill vs 未使用 Skill 的搜索对比实验](docs/skill-usage-comparison.md)
 - `2026-04-02` 仓库链接统一切换到 `ustc-ai4science/academic-search`，README 视觉与说明同步刷新
+
 ---
 
-🚀 **覆盖全**：arXiv、Semantic Scholar、Google Scholar... 七大平台火力全开。  
+🚀 **覆盖全**：arXiv、Semantic Scholar、Google Scholar、CNKI... 八大平台火力全开。
 📊 **功能强**：论文检索、引用追踪、BibTeX 导出、多源去重，一气呵成。  
 📑 **获取快**：PDF 级联获取，代码实现一键直达。  
 🎯 **策略精**：时效性优先排序，自带 CCF 等级标注，只看最值得看的顶会干货。
@@ -62,7 +63,7 @@ bash ~/.claude/skills/academic-search/scripts/check-deps.sh
 - 失败信号处理：429 / 超时 / 空结果各有对应调整策略，不在同一条路上盲目重试
 - CDP 浏览器模式：直连用户日常 Chrome，天然携带登录态，用于 Google Scholar 等反爬平台
 - 并行分治：多目标分发子 Agent 并行执行，共享 Proxy，tab 级隔离
-- 站点经验预置：7 个平台预置操作经验，跨 session 积累更新
+- 站点经验预置：8 个平台预置操作经验，跨 session 积累更新
 
 <details>
 <summary>v1.2.0 更新内容</summary>
@@ -110,7 +111,7 @@ ln -sfn "$(pwd)" ~/.claude/skills/academic-search
 
 ## 平台访问策略
 
-6 个平台直接调用开放 API，仅 Google Scholar 需要 Chrome 远程调试：
+6 个平台直接调用开放 API，Google Scholar 与 CNKI 需要 Chrome 远程调试：
 
 | 平台 | 访问方式 |
 |------|---------|
@@ -121,6 +122,7 @@ ln -sfn "$(pwd)" ~/.claude/skills/academic-search
 | ACM DL | WebFetch + Jina |
 | IEEE Xplore | WebFetch / Jina / 官方 API |
 | **Google Scholar** | **CDP 浏览器（需 Chrome 调试）** |
+| **CNKI（知网）** | **CDP 浏览器（需 Chrome 调试）** |
 
 ---
 
@@ -168,11 +170,11 @@ academic-search/
 │   ├── self-test.sh            # 本地回归测试
 │   └── release-test.sh         # 发布前测试
 ├── references/
-│   ├── api-cookbook.md         # 7 平台 API 调用速查
+│   ├── api-cookbook.md         # 8 平台调用速查
 │   ├── metadata-schema.md      # 跨平台统一元数据 schema
 │   ├── venue-rankings.md       # CS 会议/期刊 CCF 分级速查
 │   ├── cdp-api.md              # CDP Proxy HTTP API 完整参考
-│   └── site-patterns/          # 7 个平台的操作经验文件
+│   └── site-patterns/          # 8 个平台的操作经验文件
 └── docs/
     └── skill-usage-comparison.md  # 使用/未使用 Skill 的搜索对比实验
 ```

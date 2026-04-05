@@ -12,6 +12,7 @@ description: |
   - BibTeX / 参考文献格式 / 导出引用
   - 作者发表列表 / 某人的论文 / 某人在哪发了什么
   - arXiv / Semantic Scholar / Google Scholar / PubMed / ACM DL / IEEE
+  - 知网 / CNKI / 中国知网 / 学位论文 / 硕士论文 / 博士论文 / 中文文献 / 中文期刊
   - PDF 链接 / 论文 PDF / 开放获取
   - 摘要 abstract / 元数据
 
@@ -30,8 +31,9 @@ description: |
   - ieeexplore.ieee.org
   - pubmed.ncbi.nlm.nih.gov
   - paperswithcode.com
+  - cnki.net / kns.cnki.net
 
-  覆盖平台：arXiv、Semantic Scholar、Google Scholar、ACM DL、IEEE Xplore、PubMed、Papers with Code
+  覆盖平台：arXiv、Semantic Scholar、Google Scholar、ACM DL、IEEE Xplore、PubMed、Papers with Code、CNKI（中国知网）
 metadata:
   version: "1.2.0"
 ---
@@ -103,6 +105,7 @@ arXiv、Semantic Scholar、PubMed、Papers with Code 等 API 平台无需 Chrome
 | IEEE 期刊/会议论文 | **IEEE Xplore** | WebFetch / Jina | 有机构 Key 时用官方 API |
 | 广泛引用数 / 全平台覆盖 | **Google Scholar** | **CDP（必须）** | 无 API，反爬严重 |
 | 论文是否存在 / 基础元数据 | **Semantic Scholar** | REST API | 支持 DOI / arXiv ID 互查 |
+| **中文文献**（期刊/学位论文/会议） | **CNKI（知网）** | **CDP（必须）** | 无公开 API；机构登录后全文可得 |
 
 **API 平台访问方式**：
 
@@ -304,7 +307,7 @@ curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/close?target=$TARGET"
 
 操作中积累的特定网站经验，按域名存储在 `references/site-patterns/` 下。
 
-已预置经验的平台：arXiv、Semantic Scholar、Google Scholar、ACM DL、IEEE Xplore、PubMed、Papers with Code
+已预置经验的平台：arXiv、Semantic Scholar、Google Scholar、ACM DL、IEEE Xplore、PubMed、Papers with Code、CNKI（知网）
 
 确定目标平台后，**必须**读取对应文件获取先验知识（平台特征、有效模式、已知陷阱）。经验内容标注发现日期，当作**可能有效的提示，不是保证正确的事实**——按经验操作失败时，回退通用模式，并**更新经验文件**（记录失败原因和发现日期）。操作成功后若发现了新模式或陷阱，同样主动写入。
 
@@ -314,6 +317,7 @@ curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/close?target=$TARGET"
 |------|---------|
 | `references/api-cookbook.md` | 需要 API 调用示例、参数说明、响应字段映射时 |
 | `references/metadata-schema.md` | 整理提取结果、多平台去重合并、生成 BibTeX 时 |
-| `references/cdp-api.md` | 需要 CDP 浏览器操作时（Google Scholar 等） |
+| `references/cdp-api.md` | 需要 CDP 浏览器操作时（Google Scholar、CNKI 等） |
 | `references/venue-rankings.md` | 标注 CS 会议/期刊等级（CCF 分级）时 |
 | `references/site-patterns/{domain}.md` | 确定目标平台后，读取对应站点经验 |
+| `references/site-patterns/cnki.net.md` | 知网检索时必读：登录态要求、DOM 选择器、数据库代码 |
