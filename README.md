@@ -15,6 +15,13 @@
 
 ---
 
+## News
+
+- `2026-04-02` 发布 `v1.2.0`：新增前沿性优先排序、Query 扩展、PDF 直取、意图感知两遍搜索
+- `2026-04-02` 新增案例文档：[使用 Skill vs 未使用 Skill 的搜索对比实验](docs/skill-usage-comparison.md)
+- `2026-04-02` 仓库链接统一切换到 `ustc-ai4science/academic-search`，README 视觉与说明同步刷新
+---
+
 🚀 **覆盖全**：arXiv、Semantic Scholar、Google Scholar... 七大平台火力全开。  
 📊 **功能强**：论文检索、引用追踪、BibTeX 导出、多源去重，一气呵成。  
 📑 **获取快**：PDF 级联获取，代码实现一键直达。  
@@ -34,14 +41,6 @@ bash ~/.claude/skills/academic-search/scripts/check-deps.sh
 ```
 搜索 2023 年以来关于 graph neural network 的顶会论文，给我前 10 篇
 ```
-
----
-
-## News
-
-- `2026-04-02` 发布 `v1.2.0`：新增前沿性优先排序、Query 扩展、PDF 直取、意图感知两遍搜索
-- `2026-04-02` 新增案例文档：[使用 Skill vs 未使用 Skill 的搜索对比实验](docs/skill-usage-comparison.md)
-- `2026-04-02` 仓库链接统一切换到 `ustc-ai4science/academic-search`，README 视觉与说明同步刷新
 
 ---
 
