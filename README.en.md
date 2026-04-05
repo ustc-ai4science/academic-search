@@ -50,6 +50,7 @@ Search for top-venue papers on graph neural networks published after 2023, give 
 
 ## News
 
+- `2026-04-05` Added CNKI support docs: search strategy, metadata schema fields, and a dedicated site pattern file
 - `2026-04-02` Released `v1.2.0`: frontier-first ranking, query expansion, direct PDF retrieval, and intent-aware two-pass search
 - `2026-04-02` Added a new case study: [Skill vs. No-Skill Search Comparison](docs/skill-usage-comparison.md)
 - `2026-04-02` Updated repository links to `ustc-ai4science/academic-search` and refreshed the README hero/content copy

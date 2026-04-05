@@ -17,6 +17,7 @@
 
 ## News
 
+- `2026-04-05` 新增 CNKI（知网）支持文档：补充检索策略、metadata schema 字段与 site pattern 经验文件
 - `2026-04-02` 发布 `v1.2.0`：新增前沿性优先排序、Query 扩展、PDF 直取、意图感知两遍搜索
 - `2026-04-02` 新增案例文档：[使用 Skill vs 未使用 Skill 的搜索对比实验](docs/skill-usage-comparison.md)
 - `2026-04-02` 仓库链接统一切换到 `ustc-ai4science/academic-search`，README 视觉与说明同步刷新
