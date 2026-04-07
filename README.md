@@ -13,6 +13,10 @@
 
 <p align="center">🌐 <a href="README.en.md">English</a> | 简体中文</p>
 
+<p align="center">
+  <img src="assets/academic-search-framework.png" alt="Academic Search Skill Ecosystem" width="100%" />
+</p>
+
 ---
 
 ## News

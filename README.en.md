@@ -31,6 +31,10 @@
 
 <p align="center"><a href="README.md">简体中文</a> | English</p>
 
+<p align="center">
+  <img src="assets/academic-search-framework.png" alt="Academic Search Skill Ecosystem" width="100%" />
+</p>
+
 academic-search skill brings academic-oriented retrieval strategy, cross-platform metadata normalization, and browser automation support to Claude Code. It is designed for paper discovery, author analysis, citation lookup, open-access PDF retrieval, BibTeX export, and structured literature comparison across multiple sources.
 
 Compared with generic WebSearch and WebFetch, this skill focuses on three things: **platform selection for academic tasks**, **structured outputs**, and **reusable site-specific operational knowledge**.
