@@ -11,7 +11,7 @@
   <img src="https://img.shields.io/github/stars/Mingyue-Cheng/academic-search?style=social" />
 </p>
 
-<p align="center">📈 <a href="https://www.star-history.com/?repos=ustc-ai4science%2Facademic-search&type=date&legend=top-left">Star History</a></p>
+<p align="center">📈 <a href="https://star-history.dera.page/#ustc-ai4science/academic-search&type=date&legend=top-left">Star History</a></p>
 
 <p align="center">🌐 <a href="README.en.md">English</a> | 简体中文</p>
 
@@ -278,11 +278,11 @@ MIT · 作者：[Mingyue Cheng](https://mingyue-cheng.github.io/)
 ## Star History
 
 <p align="center">
-  <a href="https://www.star-history.com/?repos=ustc-ai4science%2Facademic-search&amp;type=date&amp;legend=top-left">
+  <a href="https://star-history.dera.page/#ustc-ai4science/academic-search&type=date&legend=top-left">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=ustc-ai4science/academic-search&amp;type=Date&amp;theme=dark" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=ustc-ai4science/academic-search&amp;type=Date" />
-      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=ustc-ai4science/academic-search&amp;type=Date" />
+      <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=ustc-ai4science/academic-search&amp;type=Date&amp;theme=dark" />
+      <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=ustc-ai4science/academic-search&amp;type=Date" />
+      <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=ustc-ai4science/academic-search&amp;type=Date" />
     </picture>
   </a>
 </p>
