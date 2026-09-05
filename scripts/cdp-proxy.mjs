@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { browserConfigFromEnv, ensureBrowser } from './browser-runtime.mjs';
+import { buildElementActionExpression, buildReadPageExpression, validatePressKey } from './browser-page.mjs';
 
 const PORT = parseInt(process.env.CDP_PROXY_PORT || '3457');
 const BROWSER_CONFIG = browserConfigFromEnv();
@@ -170,7 +171,8 @@ function apiError(message, code, statusCode = 400, details = {}) {
 function errorPayload(error) {
   return { error: error.message, code: error.code || 'INTERNAL_ERROR',
     ...(error.cdp_code !== undefined ? { cdp_code: error.cdp_code } : {}),
-    ...(error.data !== undefined ? { data: error.data } : {}) };
+    ...(error.data !== undefined ? { data: error.data } : {}),
+    ...(error.max_bytes !== undefined ? { max_bytes: error.max_bytes } : {}) };
 }
 
 function json(res, statusCode, payload) {
@@ -302,41 +304,72 @@ function evaluatedValue(response) {
   return response.result.result.value;
 }
 
-// Selection and click occur in one page evaluation so ambiguity is checked before mutation.
-function selectElement(selector, action) {
-  let elements;
-  try { elements = Array.from(document.querySelectorAll(selector)); }
-  catch (error) { return { error: error.message, code: 'INVALID_SELECTOR', selector }; }
-  const candidates = elements.slice(0, 5).map(el => ({ tag: el.tagName, id: el.id, text: (el.textContent || '').slice(0, 100) }));
-  const details = { selector, match_count: elements.length, candidates };
-  if (!elements.length) return { error: '未找到元素: ' + selector, code: 'ELEMENT_NOT_FOUND', ...details };
-  if (elements.length > 1) return { error: '选择器匹配多个元素: ' + selector, code: 'SELECTOR_AMBIGUOUS', ...details };
-  const el = elements[0];
-  if (action === 'inspect') return { ...details, tag: el.tagName, type: el.getAttribute('type') };
-  el.scrollIntoView({ block: 'center' });
-  if (action === 'click') {
-    el.click();
-    return { clicked: true, ...candidates[0], ...details };
-  }
-  const rect = el.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return { error: '元素没有可点击区域: ' + selector, code: 'ELEMENT_NOT_VISIBLE', ...details };
-  return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, ...candidates[0], ...details };
-}
-
-async function evaluateSelection(sessionId, selector, action) {
-  if (typeof selector !== 'string' || !selector.trim()) throw apiError('POST body 需要 CSS 选择器', 'INVALID_ARGUMENT');
+async function evaluateElementAction(sessionId, options) {
   const response = await sendCDPChecked('Runtime.evaluate', {
-    expression: `(${selectElement.toString()})(${JSON.stringify(selector)}, ${JSON.stringify(action)})`,
+    expression: buildElementActionExpression(options),
     returnByValue: true,
   }, sessionId);
   return evaluatedValue(response);
 }
 
 // --- 读取 POST body ---
-async function readBody(req) {
-  let body = '';
-  for await (const chunk of req) body += chunk;
+function readBody(req) {
+  const maximumBytes = 1024 * 1024;
+  const declaredLength = Number(req.headers?.['content-length']);
+  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
+    req.pause?.();
+    return Promise.reject(apiError(`POST body 不得超过 ${maximumBytes} 字节`, 'PAYLOAD_TOO_LARGE', 413,
+      { max_bytes: maximumBytes, close_request: true }));
+  }
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let bytes = 0;
+    let settled = false;
+    const fail = error => {
+      if (settled) return;
+      settled = true;
+      chunks.length = 0;
+      reject(error);
+    };
+    const onData = chunk => {
+      const buffered = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bytes += buffered.length;
+      if (bytes > maximumBytes) {
+        req.removeListener('data', onData);
+        req.pause?.();
+        fail(apiError(`POST body 不得超过 ${maximumBytes} 字节`, 'PAYLOAD_TOO_LARGE', 413,
+          { max_bytes: maximumBytes, close_request: true }));
+        return;
+      }
+      chunks.push(buffered);
+    };
+    req.on('data', onData);
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks, bytes).toString());
+    });
+    req.on('error', error => fail(error));
+  });
+}
+
+async function readJsonObject(req, allowedFields) {
+  let body;
+  try { body = JSON.parse(await readBody(req)); }
+  catch (error) {
+    if (error?.code === 'PAYLOAD_TOO_LARGE') throw error;
+    throw apiError('POST body 需要合法 JSON', 'INVALID_ARGUMENT');
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw apiError('POST body 需要 JSON 对象', 'INVALID_ARGUMENT');
+  const unknown = Object.keys(body).filter(field => !allowedFields.includes(field));
+  if (unknown.length) throw apiError(`未知字段: ${unknown[0]}`, 'INVALID_ARGUMENT');
   return body;
+}
+
+function requirePost(req, res, endpoint) {
+  if (req.method === 'POST') return true;
+  json(res, 405, { error: `${endpoint} 需要 POST`, code: 'METHOD_NOT_ALLOWED' });
+  return false;
 }
 
 // --- HTTP API ---
@@ -350,7 +383,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (pathname === '/health') {
       const connected = Boolean(ws && (ws.readyState === WS.OPEN || ws.readyState === 1));
-      res.end(JSON.stringify({ status: 'ok', version: '1.3.1', connected, sessions: sessions.size, chromePort,
+      res.end(JSON.stringify({ status: 'ok', version: '1.4.0', connected, sessions: sessions.size, chromePort,
         pid: process.pid, instance_id: INSTANCE_ID, port: server.address()?.port, browser }));
       return;
     }
@@ -443,11 +476,30 @@ const server = http.createServer(async (req, res) => {
       if (!requireQueryParam(res, q.target, 'target')) return;
       let body;
       try { body = JSON.parse(await readBody(req)); }
-      catch { throw apiError('POST body 需要合法 JSON', 'INVALID_ARGUMENT'); }
+      catch (error) {
+        if (error?.code === 'PAYLOAD_TOO_LARGE') throw error;
+        throw apiError('POST body 需要合法 JSON', 'INVALID_ARGUMENT');
+      }
       const options = validateWait(body);
       const sid = await ensureSession(q.target);
       const result = await waitForConditions(sid, options);
       json(res, result.code === 'WAIT_TIMEOUT' ? 408 : result.error ? 400 : 200, result);
+    }
+
+    // POST /readPage?target=xxx; bounded, heuristic light-DOM extraction.
+    else if (pathname === '/readPage') {
+      if (!requirePost(req, res, '/readPage')) return;
+      if (!requireQueryParam(res, q.target, 'target')) return;
+      const serialized = await readBody(req);
+      let body;
+      try { body = serialized.trim() ? JSON.parse(serialized) : {}; }
+      catch { throw apiError('POST body 需要合法 JSON', 'INVALID_ARGUMENT'); }
+      const sid = await ensureSession(q.target);
+      const response = await sendCDPChecked('Runtime.evaluate', {
+        expression: buildReadPageExpression(body), returnByValue: true,
+      }, sid);
+      const result = evaluatedValue(response);
+      json(res, result.error ? 400 : 200, result);
     }
 
     // POST /eval?target=xxx
@@ -473,20 +525,109 @@ const server = http.createServer(async (req, res) => {
 
     // POST /click or /clickAt?target=xxx; body remains a CSS selector.
     else if (pathname === '/click' || pathname === '/clickAt') {
+      if (!requirePost(req, res, pathname)) return;
       if (!requireQueryParam(res, q.target, 'target')) return;
       const selector = await readBody(req);
       const sid = await ensureSession(q.target);
-      const selected = await evaluateSelection(sid, selector, pathname === '/click' ? 'click' : 'coordinates');
-      if (selected.error) { json(res, 400, selected); return; }
-      if (pathname === '/clickAt') {
-        await sendCDPChecked('Input.dispatchMouseEvent', {
-          type: 'mousePressed', x: selected.x, y: selected.y, button: 'left', clickCount: 1,
-        }, sid);
-        await sendCDPChecked('Input.dispatchMouseEvent', {
-          type: 'mouseReleased', x: selected.x, y: selected.y, button: 'left', clickCount: 1,
-        }, sid);
+      if (pathname === '/click') {
+        const selected = await evaluateElementAction(sid, { selector, action: 'click' });
+        if (selected.error) { json(res, 400, selected); return; }
+        res.end(JSON.stringify({ clicked: true, status: 'dispatched', outcome_verified: false, ...selected }));
+        return;
       }
-      res.end(JSON.stringify({ clicked: true, ...selected }));
+
+      const guardId = randomUUID();
+      const selected = await evaluateElementAction(sid, { selector, action: 'coordinates', guard_id: guardId });
+      if (selected.error) { json(res, 400, selected); return; }
+      const revalidated = await evaluateElementAction(sid, {
+        selector, action: 'revalidateCoordinates', guard_id: guardId,
+      });
+      if (revalidated.error) {
+        await evaluateElementAction(sid, { selector, action: 'finishClick', guard_id: guardId }).catch(() => {});
+        json(res, 409, { ...revalidated, dispatch_target_verified: false });
+        return;
+      }
+      let dispatchError;
+      try {
+        await sendCDPChecked('Input.dispatchMouseEvent', {
+          type: 'mousePressed', x: revalidated.x, y: revalidated.y, button: 'left', clickCount: 1,
+        }, sid);
+        await sendCDPChecked('Input.dispatchMouseEvent', {
+          type: 'mouseReleased', x: revalidated.x, y: revalidated.y, button: 'left', clickCount: 1,
+        }, sid);
+      } catch (error) {
+        dispatchError = error;
+      }
+      let finalized;
+      try {
+        finalized = await evaluateElementAction(sid, { selector, action: 'finishClick', guard_id: guardId });
+      } catch (error) {
+        if (!dispatchError) dispatchError = error;
+      }
+      if (dispatchError) throw dispatchError;
+      if (finalized.error) {
+        json(res, 409, { ...finalized, clicked: false, status: 'blocked', outcome_verified: false,
+          dispatch_target_verified: false });
+        return;
+      }
+      res.end(JSON.stringify({ clicked: true, status: 'dispatched', outcome_verified: false,
+        ...revalidated, dispatch_target_verified: finalized.dispatch_target_verified === true }));
+    }
+
+    // POST /fill?target=xxx; replace editable value and report immediate DOM verification only.
+    else if (pathname === '/fill') {
+      if (!requirePost(req, res, '/fill')) return;
+      if (!requireQueryParam(res, q.target, 'target')) return;
+      const body = await readJsonObject(req, ['selector', 'text']);
+      const sid = await ensureSession(q.target);
+      const result = await evaluateElementAction(sid, { selector: body.selector, action: 'fill', text: body.text });
+      json(res, result.error ? 400 : 200, result);
+    }
+
+    // POST /insertText?target=xxx; focus is verified before CDP insertion.
+    else if (pathname === '/insertText') {
+      if (!requirePost(req, res, '/insertText')) return;
+      if (!requireQueryParam(res, q.target, 'target')) return;
+      const body = await readJsonObject(req, ['selector', 'text']);
+      if (typeof body.text !== 'string' || body.text.length > 100000) {
+        throw apiError('text 必须是至多 100000 字符的字符串', 'INVALID_ARGUMENT');
+      }
+      const sid = await ensureSession(q.target);
+      const result = await evaluateElementAction(sid, {
+        selector: body.selector, action: 'insertText', text: body.text,
+      });
+      const conflict = ['FOCUS_LOST', 'INPUT_CANCELED'].includes(result.code);
+      json(res, result.error ? conflict ? 409 : 400 : 200, result);
+    }
+
+    // POST /press?target=xxx; no modifier chords or arbitrary key names.
+    else if (pathname === '/press') {
+      if (!requirePost(req, res, '/press')) return;
+      if (!requireQueryParam(res, q.target, 'target')) return;
+      const body = await readJsonObject(req, ['key']);
+      const key = validatePressKey(body.key);
+      const sid = await ensureSession(q.target);
+      await sendCDPChecked('Input.dispatchKeyEvent', { type: key.text === undefined ? 'rawKeyDown' : 'keyDown', ...key }, sid);
+      const { text: _text, unmodifiedText: _unmodifiedText, ...keyUp } = key;
+      await sendCDPChecked('Input.dispatchKeyEvent', { type: 'keyUp', ...keyUp }, sid);
+      res.end(JSON.stringify({ key: body.key, status: 'dispatched', outcome_verified: false }));
+    }
+
+    // POST /handleJsDialog?target=xxx; JavaScript dialogs only.
+    else if (pathname === '/handleJsDialog') {
+      if (!requirePost(req, res, '/handleJsDialog')) return;
+      if (!requireQueryParam(res, q.target, 'target')) return;
+      const body = await readJsonObject(req, ['accept', 'prompt_text']);
+      if (typeof body.accept !== 'boolean' || body.prompt_text !== undefined &&
+          (typeof body.prompt_text !== 'string' || body.prompt_text.length > 100000)) {
+        throw apiError('accept 必须是布尔值，prompt_text 必须是至多 100000 字符的字符串', 'INVALID_ARGUMENT');
+      }
+      const sid = await ensureSession(q.target);
+      await sendCDPChecked('Page.handleJavaScriptDialog', {
+        accept: body.accept, ...(body.prompt_text === undefined ? {} : { promptText: body.prompt_text }),
+      }, sid);
+      res.end(JSON.stringify({ accepted: body.accept, prompt_text_supplied: body.prompt_text !== undefined,
+        status: 'dispatched', outcome_verified: false }));
     }
 
     // POST /setFiles?target=xxx
@@ -496,7 +637,8 @@ const server = http.createServer(async (req, res) => {
       let body;
       try {
         body = JSON.parse(await readBody(req));
-      } catch {
+      } catch (error) {
+        if (error?.code === 'PAYLOAD_TOO_LARGE') throw error;
         json(res, 400, { error: 'POST body 需要合法 JSON', code: 'INVALID_ARGUMENT' });
         return;
       }
@@ -504,7 +646,7 @@ const server = http.createServer(async (req, res) => {
         json(res, 400, { error: '需要 selector 和非空 files 数组字段', code: 'INVALID_ARGUMENT' });
         return;
       }
-      const selected = await evaluateSelection(sid, body.selector, 'inspect');
+      const selected = await evaluateElementAction(sid, { selector: body.selector, action: 'inspect' });
       if (selected.error) { json(res, 400, selected); return; }
       if (selected.tag !== 'INPUT' || selected.type?.toLowerCase() !== 'file') {
         json(res, 400, { error: '元素必须是 file input', code: 'INVALID_ELEMENT', ...selected });
@@ -595,8 +737,13 @@ const server = http.createServer(async (req, res) => {
           '/info?target=': 'GET - 页面信息',
           '/eval?target=': 'POST body=JS - 执行 JS',
           '/wait?target=': 'POST body=JSON - 等待具名页面状态',
+          '/readPage?target=': 'POST body=JSON - 提取有界页面内容',
           '/click?target=': 'POST body=CSS选择器 - 点击元素',
           '/clickAt?target=': 'POST body=CSS选择器 - 真实鼠标点击',
+          '/fill?target=': 'POST body=JSON - 填写输入值',
+          '/insertText?target=': 'POST body=JSON - 聚焦后插入文本',
+          '/press?target=': 'POST body=JSON - 发送受支持按键',
+          '/handleJsDialog?target=': 'POST body=JSON - 处理 JavaScript 对话框',
           '/setFiles?target=': 'POST body=JSON - 文件上传',
           '/scroll?target=&y=&direction=': 'GET - 滚动页面',
           '/screenshot?target=&file=': 'GET - 截图',
@@ -604,6 +751,10 @@ const server = http.createServer(async (req, res) => {
       }));
     }
   } catch (e) {
+    if (e?.code === 'PAYLOAD_TOO_LARGE' && e.close_request) {
+      res.setHeader('Connection', 'close');
+      res.once('finish', () => req.destroy());
+    }
     json(res, e.statusCode || 500, errorPayload(e));
   }
 });
