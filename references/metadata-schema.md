@@ -68,7 +68,7 @@
 
 ### 字段说明
 
-“必填”指输出应保留该键，不要求编造未知值。缺失的标量（包括标题、年份）允许 `null`，未知作者允许 `null` 或空数组并在 `missing_fields.authors` 注明原因；不要将未知计数填为 0。所有可选字段也允许 `null`。`missing_fields` 按字段名记录缺失原因；已知来源可保留于 `source_platforms`，未检索时不能虚构来源 URL 或查询时间。
+“必填”指输出应保留该键，不要求编造未知值。缺失的标量（包括标题、年份）允许 `null`，但 `fetched_at` 必须是非空且真实存在的 `YYYY-MM-DD` 日期；未知作者允许 `null` 或空数组并在 `missing_fields.authors` 注明原因。不要将未知计数填为 0。所有可选字段也允许 `null`。`missing_fields` 按字段名记录缺失原因；已知来源可保留于 `source_platforms`，未检索时不能虚构来源 URL 或查询时间。
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -196,16 +196,26 @@
 
 多个子 Agent 并行查询同一目标时，结果需按以下优先级合并去重：
 
+可执行校验与保守去重使用 `scripts/academic-records.mjs`，完整 CLI、输出字段、诊断码和退出码见 [academic-records.md](academic-records.md)。CLI 的 `index`、`source_indices` 均为原数组的零基位置。
+
+### 可执行校验边界
+
+`validate` 检查必填键、基础类型、标识符和年份格式，以及 `citation_counts` / `field_sources` 的证据记录结构；必填的 `fetched_at` 还必须是非空有效日期，`null` 是 error。证据敏感字段已有值但缺少对应来源时输出 warning，不补造 provenance，也不因缺少来源删除整条记录。验证 error 会让 CLI 在原子写出完整报告后以状态码 1 退出。
+
 ### 主键优先级
 
 1. **DOI**：去除 DOI URL 前缀、首尾空白，大小写规范化后匹配同一记录；不同版本/更正关系保留，不任意合并
-2. **arXiv ID**：按基础 ID 归组，保留版本后缀；不同版本 PDF 不当作字节相同
-3. **PubMed ID**：PMID 相同 → 同一篇论文
-4. **标题 + 年份 + 作者**：仅生成疑似重复候选；核对作者、摘要或来源后再合并，避免同名论文误合并
+2. **arXiv ID**：按基础 ID 归组，保留版本后缀；版本必须从 `v1` 开始且序号不能全零，URL 只接受 `arxiv.org/abs/ID` 或 `arxiv.org/pdf/ID[.pdf]`；不同版本 PDF 不当作字节相同
+3. **PubMed ID**：有效正整数 PMID 相同 → 同一篇论文；`0` 或全零输入无效
+4. **标题线索**：可执行工具检查每个精确 ID 组中的所有原始标题，只把规范化后完全相同的实际标题列入 `possible_duplicates`；每个 result 在 `titles` 中保留首次出现的代表标题，在对应 `source_indices` 中列出该 result 内所有同规范化标题的来源位置，二者不按来源逐条一一对应。标题候选不自动合并；标题 + 年份 + 作者等组合可用于后续人工核对，避免同名论文误合并
+
+自动去重将共享任一精确键的记录构造成连通组，因此不同标识符可以传递连接同一组。合并结果保留 `source_indices`；带版本的 arXiv ID 另以 `arxiv_versions` 保存原始 ID、版本标签和来源位置。无效标识符不参与匹配。完整 `dedupe` 输出再次交给 CLI 时，只有在 result lineage、groups、候选与冲突引用都自洽，`matched_by` 能由 result 或 identifier conflicts 支持，且所有仍可观察的带版本 arXiv 原值都被 `arxiv_versions` 覆盖时才原样保留；部分、矛盾或伪造的 provenance 会以 `INVALID_INPUT` 被拒绝。
 
 ### 字段合并策略
 
 同一篇论文来自多个平台时，字段按以下优先级填充：
+
+下表是人工裁决时的来源优先参考。CLI 不在来源证据或用户口径不足时自动套用该表：它保留组内最早的非空标量，把其他值及源索引写入 `conflicts`，并对数组、`citation_counts` 和 `field_sources` 做稳定去重并集。后续记录补齐字段时，会清除该字段已有的 `missing_fields` 标记。
 
 | 字段 | 优先来源 |
 |------|---------|
