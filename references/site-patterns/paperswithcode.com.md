@@ -1,13 +1,21 @@
 ---
 domain: paperswithcode.com
 aliases: [Papers with Code, PwC]
-updated: 2026-04-01
+updated: 2026-09-05
+status: unverified
+last_verified: null
+operations: [code-discovery, benchmarks]
+environment: historical-api
 ---
 
-## 平台特征
+## 当前使用规则
+
+以下为历史 API 记录，当前可用性未复验，不作为默认补全路径。优先论文、作者项目页及官方仓库链接；旧端点失败不代表没有代码。确需调用时先验证最终 URL、响应类型和字段结构，失效后回退当前来源。
+
+## 历史平台特征
 
 - 专注于 ML/CV/NLP/AI 领域，建立论文 ↔ 代码仓库 ↔ benchmark 结果的关联
-- 完全公开的 REST API，无需鉴权
+- 历史接口曾按无需鉴权的 REST API 方式调用；当前规则需现场确认
 - 论文收录不全（主要覆盖有代码实现的 ML 论文）
 - 引用数不完整（依赖 Semantic Scholar 数据）
 - 独特价值：获取论文官方/非官方代码实现、benchmark 排行榜

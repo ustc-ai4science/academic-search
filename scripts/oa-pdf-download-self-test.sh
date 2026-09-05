@@ -36,11 +36,14 @@ assert_contains() {
 
 cat > "${SERVER_JS}" <<'JS'
 import http from 'node:http';
+import fs from 'node:fs';
+
+const validPdf = fs.readFileSync(process.argv[2]);
 
 const server = http.createServer((req, res) => {
   if (req.url === '/paper.pdf') {
     res.writeHead(200, { 'content-type': 'application/pdf' });
-    res.end('%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n');
+    res.end(validPdf);
     return;
   }
   if (req.url === '/not-pdf') {
@@ -58,7 +61,7 @@ server.listen(0, '127.0.0.1', () => {
 });
 JS
 
-node "${SERVER_JS}" > "${SERVER_LOG}" 2>&1 &
+node "${SERVER_JS}" "${ROOT_DIR}/scripts/fixtures/pdf/valid.pdf" > "${SERVER_LOG}" 2>&1 &
 SERVER_PID=$!
 
 for _ in $(seq 1 20); do

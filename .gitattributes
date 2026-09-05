@@ -1,0 +1,2 @@
+# Preserve byte offsets and required whitespace in PDF test fixtures.
+scripts/fixtures/pdf/*.pdf binary

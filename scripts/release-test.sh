@@ -3,9 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PROXY_PORT="${CDP_PROXY_PORT:-4568}"
+PROXY_PORT="${CDP_PROXY_PORT:-0}"
 BASE_URL="http://127.0.0.1:${PROXY_PORT}"
 PROXY_PID=""
+TEST_DIR="$(mktemp -d /tmp/academic-search-release-test.XXXXXX)"
+PROXY_LOG="${TEST_DIR}/proxy.log"
 TARGET_A=""
 TARGET_B=""
 FIXTURE_HTML=""
@@ -16,6 +18,7 @@ UPLOAD_B=""
 HTTP_BODY_FILE=""
 
 cleanup() {
+  rm -f "${PROXY_LOG}" "${HTTP_BODY_FILE}" >/dev/null 2>&1 || true
   if [ -n "${TARGET_A}" ]; then
     curl -s "${BASE_URL}/close?target=${TARGET_A}" >/dev/null 2>&1 || true
   fi
@@ -44,6 +47,7 @@ cleanup() {
   if [ -n "${HTTP_BODY_FILE}" ]; then
     rm -f "${HTTP_BODY_FILE}" >/dev/null 2>&1 || true
   fi
+  rmdir "${TEST_DIR}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -110,27 +114,32 @@ request_with_status() {
 }
 
 start_proxy() {
-  echo "Starting release-test proxy on port ${PROXY_PORT}"
-  CDP_PROXY_PORT="${PROXY_PORT}" node "${SCRIPT_DIR}/cdp-proxy.mjs" >/tmp/academic-search-release-test.proxy.log 2>&1 &
+  echo "Starting isolated test proxy (requested port ${PROXY_PORT})"
+  CDP_PROXY_PORT="${PROXY_PORT}" node "${SCRIPT_DIR}/cdp-proxy.mjs" >"${PROXY_LOG}" 2>&1 &
   PROXY_PID=$!
-
-  local health=""
-  for _ in $(seq 1 20); do
-    health="$(curl -s "${BASE_URL}/health" 2>/dev/null || true)"
-    if [[ "${health}" == *'"status":"ok"'* && "${health}" == *'"connected":true'* ]]; then
-      return 0
+  local health="" bound_port=""
+  for _ in $(seq 1 40); do
+    kill -0 "${PROXY_PID}" 2>/dev/null || fail "new proxy process exited; refusing to test an existing instance: $(cat "${PROXY_LOG}")"
+    bound_port="$(sed -n 's#.*运行在 http://127.0.0.1:\([0-9]*\).*#\1#p' "${PROXY_LOG}" | head -n 1)"
+    if [ -n "${bound_port}" ]; then
+      PROXY_PORT="${bound_port}"
+      BASE_URL="http://127.0.0.1:${PROXY_PORT}"
+      health="$(curl -s --max-time 3 "${BASE_URL}/health" 2>/dev/null || true)"
+      if printf '%s' "${health}" | node -e 'let h;try{h=JSON.parse(require("fs").readFileSync(0,"utf8"))}catch{process.exit(1)};process.exit(h.pid===Number(process.argv[1])&&h.instance_id&&h.connected===true?0:1)' "${PROXY_PID}"; then
+        return 0
+      fi
     fi
-    sleep 1
+    sleep 0.25
   done
-  fail "proxy health did not reach connected=true"
+  fail "owned proxy did not connect to Chrome: $(cat "${PROXY_LOG}")"
 }
 
-FIXTURE_HTML="$(mktemp /tmp/academic-search-release-test.XXXXXX.html)"
-PNG_FILE="$(mktemp /tmp/academic-search-release-test-shot.XXXXXX.png)"
-PNG_HEADERS="$(mktemp /tmp/academic-search-release-test-headers.XXXXXX.txt)"
-UPLOAD_A="$(mktemp /tmp/academic-search-release-upload-a.XXXXXX.txt)"
-UPLOAD_B="$(mktemp /tmp/academic-search-release-upload-b.XXXXXX.txt)"
-HTTP_BODY_FILE="$(mktemp /tmp/academic-search-release-http-body.XXXXXX.txt)"
+FIXTURE_HTML="${TEST_DIR}/fixture_html.html"
+PNG_FILE="${TEST_DIR}/png_file.png"
+PNG_HEADERS="${TEST_DIR}/png_headers.txt"
+UPLOAD_A="${TEST_DIR}/upload_a.txt"
+UPLOAD_B="${TEST_DIR}/upload_b.txt"
+HTTP_BODY_FILE="${TEST_DIR}/http_body_file.txt"
 
 printf 'upload-a\n' > "${UPLOAD_A}"
 printf 'upload-b\n' > "${UPLOAD_B}"
@@ -169,13 +178,15 @@ assert_contains "${README_EN_CONTENT}" 'open-access PDF' "README.en open-access 
 assert_contains "${README_EN_CONTENT}" 'open-access PDF download' "README.en OA PDF download mention"
 assert_contains "${README_EN_CONTENT}" 'does not bypass paywalls' "README.en paywall boundary"
 SKILL_CONTENT="$(cat "${ROOT_DIR}/SKILL.md")"
+SCHEMA_CONTENT="$(cat "${ROOT_DIR}/references/metadata-schema.md")"
 assert_contains "${SKILL_CONTENT}" '学科路由' "SKILL discipline routing section"
-assert_contains "${SKILL_CONTENT}" 'full_text_status' "SKILL full text status guidance"
+assert_contains "${SCHEMA_CONTENT}" 'full_text_status' "metadata full text status guidance"
+assert_contains "${SKILL_CONTENT}" 'references/full-text-workflow.md' "SKILL delegated full text workflow"
 assert_contains "${SKILL_CONTENT}" 'references/disciplines' "SKILL discipline references index"
 assert_contains "${SKILL_CONTENT}" 'OpenAlex' "SKILL OpenAlex coverage"
 assert_contains "${SKILL_CONTENT}" 'Crossref' "SKILL Crossref coverage"
 assert_contains "${SKILL_CONTENT}" '开放 PDF 下载与 manifest 导出' "SKILL OA PDF download section"
-assert_contains "${SKILL_CONTENT}" 'download_status' "SKILL download status schema"
+assert_contains "${SCHEMA_CONTENT}" 'download_status' "metadata download status schema"
 assert_contains "${SKILL_CONTENT}" '不得调用 Sci-Hub' "SKILL no Sci-Hub boundary"
 [ -f "${ROOT_DIR}/references/disciplines/biomedicine.md" ] || fail "missing biomedicine discipline profile"
 [ -f "${ROOT_DIR}/references/disciplines/computer-science.md" ] || fail "missing computer science discipline profile"
@@ -185,6 +196,8 @@ assert_contains "${SKILL_CONTENT}" '不得调用 Sci-Hub' "SKILL no Sci-Hub boun
 [ -f "${ROOT_DIR}/references/site-patterns/sciencedirect.com.md" ] || fail "missing ScienceDirect site pattern"
 
 start_proxy
+
+node "${SCRIPT_DIR}/browser-smoke.mjs" "${BASE_URL}" "${PROXY_PID}"
 
 CHECK_DEPS_OUTPUT="$(CDP_PROXY_PORT="${PROXY_PORT}" bash "${SCRIPT_DIR}/check-deps.sh")"
 assert_contains "${CHECK_DEPS_OUTPUT}" "proxy: ready (port ${PROXY_PORT})" "check-deps output"

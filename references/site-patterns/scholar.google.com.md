@@ -1,84 +1,72 @@
 ---
 domain: scholar.google.com
 aliases: [Google Scholar, GS]
-updated: 2026-04-01
+operations: [search, citations, author, full_text]
+status: unverified
+environment: browser-dom
+updated: 2026-09-05
+last_verified: null
 ---
 
-## 平台特征
+# Google Scholar
 
-- 引用数最全面的学术搜索引擎，覆盖范围广（含灰色文献、技术报告）
-- **无官方 API**，严重反爬（reCAPTCHA v3 + IP 封禁）
-- 必须使用 CDP 直连用户 Chrome（天然携带登录态，模拟真实用户行为）
-- 不要尝试：WebFetch、curl、任何第三方 Scholar API（均不稳定且需付费）
-- 主要使用场景：获取引用数、发现其他平台未收录的论文、查看 "Cited by" 关系
+以下选择器来自历史经验，本次仅整理文档，未做线上复验。`updated` 是编辑日期，不是成功访问日期。按 [浏览器工作流](../browser-workflow.md) 操作；协议见 [CDP API](../cdp-api.md)。用户指定 Scholar 时使用当前环境可用的浏览器；无需为其他 API 平台启动 Scholar。
 
-## 有效模式
+## 检索与引用
 
-### 搜索流程（GUI 方式最稳定）
-
-```bash
-# 从首页搜索框操作，不直接构造 /scholar?q= URL
-TARGET=$(curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/new?url=https://scholar.google.com" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).targetId")
-
-# 等待页面加载后输入搜索词
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/eval?target=$TARGET" \
-  -d 'document.querySelector("input[name=q]").value = "transformer attention mechanism"'
-
-# 点击搜索按钮
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/click?target=$TARGET" -d 'button[type=submit]'
-
-# 等待结果（可用 /info 确认 URL 已变更）
-sleep 2
-
-# 提取结果（最多 10 条）
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/eval?target=$TARGET" -d '
-JSON.stringify(Array.from(document.querySelectorAll(".gs_ri")).slice(0,10).map(el => ({
-  title: el.querySelector(".gs_rt")?.textContent?.replace(/^\[.*?\]\s*/, "").trim(),
-  url: el.querySelector(".gs_rt a")?.href,
-  meta: el.querySelector(".gs_a")?.textContent?.trim(),
-  snippet: el.querySelector(".gs_rs")?.textContent?.trim(),
-  cited_by: el.querySelector(".gs_fl a[href*=cites]")?.textContent?.match(/\d+/)?.[0]
-})))
-'
+```yaml
+id: scholar-search-dom
+operations: [search, citations]
+status: unverified
+environment: browser-dom
+preconditions: [当前页面为 Scholar 检索界面, 已核对控件唯一性]
+recorded: 2026-04-01
+last_verified: null
+evidence: historical-selectors-only
+failure_signals: [结果区域未出现, 查询词不一致, 挑战页, 选择器多匹配]
+fallback: 重新观察当前 DOM 并定位一次；仍受阻则记录来源限制
+supersedes: null
 ```
 
-### 结果选择器（截至 2026-04-01）
+从当前入口或已观察的查询链接进入，先检查搜索词与页面类型；不能断言“搜索框比 URL 一定更稳定”。提交后等待 `results_ready`、明确 `empty`、`blocked`、`login_required` 或 `rate_limited`，而不是固定 sleep 后直接提取。挑战条件先于可能残留的旧列表条件。
 
-| 元素 | CSS 选择器 |
-|------|-----------|
-| 结果容器 | `.gs_ri` |
+| 历史候选控件 | 选择器 / 线索 |
+|---|---|
+| 搜索框 | `input[name=q]` |
+| 结果区域 | `.gs_ri` |
 | 标题链接 | `.gs_rt a` |
-| 作者/venue/年份行 | `.gs_a` |
-| 摘要片段 | `.gs_rs` |
-| "Cited by N" 链接 | `.gs_fl a[href*=cites]` |
-| PDF 链接 | `.gs_or_ggsm a, [data-clk-atid]` |
+| 作者 / 来源 / 年份原始行 | `.gs_a` |
+| 搜索片段 | `.gs_rs` |
+| 被引链接 | `.gs_fl a[href*=cites]` |
+| 全文候选链接 | `.gs_or_ggsm a` |
 | 下一页 | `#gs_n td:last-child a` |
 
-### 作者主页
+先检查这些结构仍匹配当前页面，再在各论文行内提取字段。`.gs_a` 是混合文本，不用简单按连字符拆分推断完整作者和 venue；详情或官方元数据可补齐。`.gs_rs` 是搜索片段，不能作为完整摘要。引用数显示缺失或无法解析时保留原始文本与空值，不填 0。
 
-```javascript
-// 作者主页 URL 格式
-"https://scholar.google.com/citations?user={user_id}&sortby=pubdate"
+提取前核对查询词、年份筛选和当前排序。翻页前保存当前页码与首条论文链接，翻页后等到记录变化；重复页面不计入新增论文。所有“引用 / PDF”动作都限定到已确认的论文行，遇多匹配先收窄选择器。
 
-// 论文列表选择器
-Array.from(document.querySelectorAll(".gsc_a_tr")).map(tr => ({
-  title: tr.querySelector(".gsc_a_at")?.textContent,
-  year: tr.querySelector(".gsc_a_y span")?.textContent,
-  cited_by: tr.querySelector(".gsc_a_c a")?.textContent
-}))
+Scholar 引用数按平台与检查时间记录；与 S2、CNKI 计数不同不意味着某个来源错误，不宣称任一平台的值天然是唯一真值。重定向链接只在确认目标参数后解析，保存实际来源和目标 URL。
+
+## 作者页
+
+```yaml
+id: scholar-author-pagination
+operations: [author]
+status: unverified
+environment: browser-dom
+preconditions: [已通过姓名之外的信息确认作者身份]
+recorded: 2026-04-01
+last_verified: null
+evidence: historical-selectors-only
+failure_signals: [同名作者, 列表未变化, 加载更多受阻]
+fallback: 保留已取记录及覆盖范围，换作者官方主页或其他来源核对
+supersedes: null
 ```
 
-### 操作节奏建议
+历史入口为 `https://scholar.google.com/citations?user={user_id}`；先比对机构、领域、主页链接等身份信息。历史列表行为 `.gsc_a_tr`，标题 `.gsc_a_at`、年份 `.gsc_a_y span`、被引 `.gsc_a_c a`。每次加载更多都核对累计唯一论文数和控件状态；到达限制时报告“已获取 N 条”，不能声称作者全部论文已获取。
 
-- 相邻两次搜索之间间隔 5-10 秒
-- 单次 session 搜索不超过 20 次
-- 遇到 CAPTCHA 立即停止，等待用户手动完成验证
+## 全文与访问限制
 
-## 已知陷阱
+PDF 标记、链接文本或 arXiv ID 只是发现线索；依 [全文工作流](../full-text-workflow.md) 核对 OA 来源和文件。遇 CAPTCHA/挑战停止该路径，不尝试用真实鼠标点击绕过；继续其他合法来源，只有指定来源确实不可替代且需要用户操作时报告阻塞。
 
-- 直接构造 `/scholar?q=xxx` URL 比从首页搜索框触发更容易被识别为爬虫（发现于 2026-04-01）
-- 引用数 "Cited by N" 中的 N 与 Semantic Scholar 的数值通常不一致（Scholar 更高，包含更多灰色文献）
-- 页面使用 JavaScript 动态渲染，WebFetch 只能获取空页面或重定向到 CAPTCHA
-- `.gs_a` 行格式为 "Author1, Author2 - Venue, Year - Publisher"，解析时需按 `-` 分割
-- 已登录用户的 Scholar 页面可能出现个性化推荐，影响结果顺序
-- 部分链接含 Google 重定向（`/url?q=...`），需提取 `q` 参数值才能获得真实 URL
+未在线校准任何固定“安全搜索次数”或请求间隔，不把历史 20 次/session 等数字当平台保证。平台明示限流时遵守等待信息和任务预算。只关闭本任务创建的 target；经验的 verified 状态需实际复验，不自动写回全局记忆。

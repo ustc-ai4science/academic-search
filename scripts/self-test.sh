@@ -2,17 +2,21 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROXY_PORT="${CDP_PROXY_PORT:-4568}"
+PROXY_PORT="${CDP_PROXY_PORT:-0}"
 BASE_URL="http://127.0.0.1:${PROXY_PORT}"
 PROXY_PID=""
+TEST_DIR="$(mktemp -d /tmp/academic-search-self-test.XXXXXX)"
+PROXY_LOG="${TEST_DIR}/proxy.log"
 TARGET_ID=""
 FIXTURE_HTML=""
 SHOT_FILE=""
 JPEG_FILE=""
 NAV_HTML=""
 UPLOAD_FILE=""
+HTTP_BODY_FILE="${TEST_DIR}/http_body_file.txt"
 
 cleanup() {
+  rm -f "${PROXY_LOG}" "${HTTP_BODY_FILE}" >/dev/null 2>&1 || true
   if [ -n "${TARGET_ID}" ]; then
     curl -s "${BASE_URL}/close?target=${TARGET_ID}" >/dev/null 2>&1 || true
   fi
@@ -35,6 +39,7 @@ cleanup() {
   if [ -n "${UPLOAD_FILE}" ]; then
     rm -f "${UPLOAD_FILE}" >/dev/null 2>&1 || true
   fi
+  rmdir "${TEST_DIR}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -99,21 +104,38 @@ request_with_status() {
   local url="$2"
   local body="${3-}"
   if [ -n "${body}" ]; then
-    curl -s -o /tmp/academic-search-self-test.body -w '%{http_code}' -X "${method}" "${url}" -d "${body}"
+    curl -s -o "${HTTP_BODY_FILE}" -w '%{http_code}' -X "${method}" "${url}" -d "${body}"
   else
-    curl -s -o /tmp/academic-search-self-test.body -w '%{http_code}' -X "${method}" "${url}"
+    curl -s -o "${HTTP_BODY_FILE}" -w '%{http_code}' -X "${method}" "${url}"
   fi
 }
 
-echo "Starting proxy on port ${PROXY_PORT}"
-CDP_PROXY_PORT="${PROXY_PORT}" node "${SCRIPT_DIR}/cdp-proxy.mjs" >/tmp/academic-search-self-test.proxy.log 2>&1 &
-PROXY_PID=$!
+start_proxy() {
+  echo "Starting isolated test proxy (requested port ${PROXY_PORT})"
+  CDP_PROXY_PORT="${PROXY_PORT}" node "${SCRIPT_DIR}/cdp-proxy.mjs" >"${PROXY_LOG}" 2>&1 &
+  PROXY_PID=$!
+  local health="" bound_port=""
+  for _ in $(seq 1 40); do
+    kill -0 "${PROXY_PID}" 2>/dev/null || fail "new proxy process exited; refusing to test an existing instance: $(cat "${PROXY_LOG}")"
+    bound_port="$(sed -n 's#.*运行在 http://127.0.0.1:\([0-9]*\).*#\1#p' "${PROXY_LOG}" | head -n 1)"
+    if [ -n "${bound_port}" ]; then
+      PROXY_PORT="${bound_port}"
+      BASE_URL="http://127.0.0.1:${PROXY_PORT}"
+      health="$(curl -s --max-time 3 "${BASE_URL}/health" 2>/dev/null || true)"
+      if printf '%s' "${health}" | node -e 'let h;try{h=JSON.parse(require("fs").readFileSync(0,"utf8"))}catch{process.exit(1)};process.exit(h.pid===Number(process.argv[1])&&h.instance_id&&h.connected===true?0:1)' "${PROXY_PID}"; then
+        return 0
+      fi
+    fi
+    sleep 0.25
+  done
+  fail "owned proxy did not connect to Chrome: $(cat "${PROXY_LOG}")"
+}
 
-FIXTURE_HTML="$(mktemp /tmp/academic-search-self-test.XXXXXX.html)"
-SHOT_FILE="$(mktemp /tmp/academic-search-self-test-shot.XXXXXX.png)"
-JPEG_FILE="$(mktemp /tmp/academic-search-self-test-shot.XXXXXX.jpg)"
-NAV_HTML="$(mktemp /tmp/academic-search-self-test-nav.XXXXXX.html)"
-UPLOAD_FILE="$(mktemp /tmp/academic-search-self-test-upload.XXXXXX.txt)"
+FIXTURE_HTML="${TEST_DIR}/fixture_html.html"
+SHOT_FILE="${TEST_DIR}/shot_file.png"
+JPEG_FILE="${TEST_DIR}/jpeg_file.jpg"
+NAV_HTML="${TEST_DIR}/nav_html.html"
+UPLOAD_FILE="${TEST_DIR}/upload_file.txt"
 printf 'academic-search upload fixture\n' > "${UPLOAD_FILE}"
 printf '%s' '<!doctype html>
 <html>
@@ -146,17 +168,9 @@ printf '%s' '<!doctype html>
 </body>
 </html>' > "${NAV_HTML}"
 
-HEALTH=""
-for _ in $(seq 1 20); do
-  HEALTH="$(curl -s "${BASE_URL}/health" 2>/dev/null || true)"
-  if [[ "${HEALTH}" == *'"status":"ok"'* && "${HEALTH}" == *'"connected":true'* ]]; then
-    break
-  fi
-  sleep 1
-done
+start_proxy
 
-assert_contains "${HEALTH}" '"status":"ok"' "health endpoint"
-assert_contains "${HEALTH}" '"connected":true' "health endpoint"
+node "${SCRIPT_DIR}/browser-smoke.mjs" "${BASE_URL}" "${PROXY_PID}"
 
 TARGET_JSON="$(request GET "${BASE_URL}/new?url=about:blank")"
 TARGET_ID="$(printf '%s' "${TARGET_JSON}" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).targetId")"
@@ -169,22 +183,22 @@ EVAL_OK="$(request POST "${BASE_URL}/eval?target=${TARGET_ID}" 'document.title')
 assert_contains "${EVAL_OK}" '"value":""' "eval endpoint"
 
 STATUS="$(request_with_status POST "${BASE_URL}/eval" 'document.title')"
-BODY="$(cat /tmp/academic-search-self-test.body)"
+BODY="$(cat "${HTTP_BODY_FILE}")"
 [ "${STATUS}" = "400" ] || fail "eval without target should return 400, got ${STATUS}"
 assert_contains "${BODY}" '缺少必填参数: target' "eval missing target"
 
 STATUS="$(request_with_status POST "${BASE_URL}/setFiles?target=${TARGET_ID}" '{bad json}')"
-BODY="$(cat /tmp/academic-search-self-test.body)"
+BODY="$(cat "${HTTP_BODY_FILE}")"
 [ "${STATUS}" = "400" ] || fail "setFiles malformed JSON should return 400, got ${STATUS}"
 assert_contains "${BODY}" 'POST body 需要合法 JSON' "setFiles malformed JSON"
 
 STATUS="$(request_with_status GET "${BASE_URL}/navigate?target=${TARGET_ID}")"
-BODY="$(cat /tmp/academic-search-self-test.body)"
+BODY="$(cat "${HTTP_BODY_FILE}")"
 [ "${STATUS}" = "400" ] || fail "navigate without url should return 400, got ${STATUS}"
 assert_contains "${BODY}" '缺少必填参数: url' "navigate missing url"
 
 STATUS="$(request_with_status GET "${BASE_URL}/close")"
-BODY="$(cat /tmp/academic-search-self-test.body)"
+BODY="$(cat "${HTTP_BODY_FILE}")"
 [ "${STATUS}" = "400" ] || fail "close without target should return 400, got ${STATUS}"
 assert_contains "${BODY}" '缺少必填参数: target' "close missing target"
 
@@ -203,7 +217,7 @@ CLICK_STATE="$(request POST "${BASE_URL}/eval?target=${TARGET_ID}" 'document.bod
 assert_contains "${CLICK_STATE}" '"value":"true"' "click effect"
 
 STATUS="$(request_with_status POST "${BASE_URL}/click?target=${TARGET_ID}" '#missing-btn')"
-BODY="$(cat /tmp/academic-search-self-test.body)"
+BODY="$(cat "${HTTP_BODY_FILE}")"
 [ "${STATUS}" = "400" ] || fail "click missing element should return 400, got ${STATUS}"
 assert_contains "${BODY}" '未找到元素: #missing-btn' "click missing element"
 
@@ -213,7 +227,7 @@ CLICK_AT_STATE="$(request POST "${BASE_URL}/eval?target=${TARGET_ID}" 'document.
 assert_contains "${CLICK_AT_STATE}" '"value":"true"' "clickAt effect"
 
 STATUS="$(request_with_status POST "${BASE_URL}/clickAt?target=${TARGET_ID}" '#missing-real-btn')"
-BODY="$(cat /tmp/academic-search-self-test.body)"
+BODY="$(cat "${HTTP_BODY_FILE}")"
 [ "${STATUS}" = "400" ] || fail "clickAt missing element should return 400, got ${STATUS}"
 assert_contains "${BODY}" '未找到元素: #missing-real-btn' "clickAt missing element"
 
@@ -258,11 +272,13 @@ assert_contains "${SETFILES_STATE}" '"filesLength":1' "setFiles DOM files length
 
 NAV_URL="file://${NAV_HTML}"
 NAVIGATE_OK="$(request GET "${BASE_URL}/navigate?target=${TARGET_ID}&url=${NAV_URL}")"
+assert_contains "${NAVIGATE_OK}" '"load_status":"complete"' "navigate load status"
 assert_contains "${NAVIGATE_OK}" '"frameId"' "navigate endpoint"
 NAV_INFO="$(request GET "${BASE_URL}/info?target=${TARGET_ID}")"
 assert_contains "${NAV_INFO}" '"title":"academic-search navigation fixture"' "navigate effect"
 
 BACK_OK="$(request GET "${BASE_URL}/back?target=${TARGET_ID}")"
+assert_contains "${BACK_OK}" '"load_status":"complete"' "back load status"
 assert_contains "${BACK_OK}" '"ok":true' "back endpoint"
 BACK_INFO="$(request GET "${BASE_URL}/info?target=${TARGET_ID}")"
 assert_contains "${BACK_INFO}" '"title":"academic-search self-test fixture"' "back effect"

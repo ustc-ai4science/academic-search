@@ -32,6 +32,10 @@
   "sample_size": null,
   "population": null,
   "citation_count": 90000,
+  "citation_counts": [{"platform": "semanticscholar", "count": 90000, "checked_at": "2026-04-01T00:00:00Z", "source_url": "https://api.semanticscholar.org/graph/v1/paper/ARXIV:1706.03762"}],
+  "field_sources": {
+    "pdf_url": [{"platform": "arxiv", "source_url": "https://arxiv.org/abs/1706.03762", "checked_at": "2026-04-01T00:00:00Z", "evidence_type": "source_metadata"}]
+  },
   "download_count": null,
   "open_access_status": "green",
   "license": null,
@@ -41,15 +45,30 @@
   "download_status": "not_requested",
   "download_error": null,
   "download_source": null,
+  "final_url": null,
+  "content_type": null,
+  "checked_at": null,
+  "byte_length": null,
+  "sha256": null,
+  "http_status": null,
+  "retry_after": null,
+  "download_error_code": null,
+  "pdf_verification_status": "unverified",
+  "paper_identity_status": "unverified",
   "data_availability": null,
   "code_url": null,
   "bibtex": "@inproceedings{vaswani2017attention,...}",
+  "missing_fields": {},
   "source_platforms": ["arxiv", "semanticscholar"],
   "fetched_at": "2026-04-01"
 }
 ```
 
+以上为字段示例，数值和时间不代表实时查询结果。`full_text_status=open_pdf` 表示来源明确提供开放 PDF 入口；此示例尚未验证文件字节或论文身份。
+
 ### 字段说明
+
+“必填”指输出应保留该键，不要求编造未知值。缺失的标量（包括标题、年份）允许 `null`，未知作者允许 `null` 或空数组并在 `missing_fields.authors` 注明原因；不要将未知计数填为 0。所有可选字段也允许 `null`。`missing_fields` 按字段名记录缺失原因；已知来源可保留于 `source_platforms`，未检索时不能虚构来源 URL 或查询时间。
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -60,7 +79,7 @@
 | `publication_type` | string | 否 | 文献类型，如 `journal-article`、`conference`、`preprint`、`review`、`clinical-trial`、`book-chapter`、`working-paper` |
 | `venue` | string | 否 | 会议/期刊名称，包含年份（如 `NeurIPS 2017`） |
 | `doi` | string | 否 | 全局唯一标识，格式 `10.xxx/xxx` |
-| `arxiv_id` | string | 否 | arXiv ID，仅数字+点格式（如 `1706.03762`） |
+| `arxiv_id` | string | 否 | arXiv 标识，可含历史学科前缀或版本后缀；去重时分离基础 ID 与版本，保留原始标识 |
 | `pubmed_id` | string | 否 | PubMed PMID |
 | `pmcid` | string | 否 | PubMed Central 全文 ID |
 | `orcid` | string[] | 否 | 作者 ORCID 列表，用于作者消歧 |
@@ -76,20 +95,33 @@
 | `study_type` | string | 否 | 医学/社科研究类型，如 RCT、cohort、case-control、survey、qualitative |
 | `sample_size` | integer | 否 | 研究样本量 |
 | `population` | string | 否 | 研究对象、人群或样本来源 |
-| `citation_count` | integer | 否 | 引用数（来自 Scholar 或 Semantic Scholar） |
+| `citation_count` | integer | 否 | 展示用引用数；必须能追溯到 `citation_counts` 中所选平台及时间，不跨平台相加 |
+| `citation_counts` | object[] | 否 | 各平台独立计数：`platform`、`count`、`checked_at`、`source_url` |
+| `field_sources` | object | 否 | 按字段名索引的证据数组，每项包含 `platform`、`source_url`、`checked_at`、`evidence_type`；可补 `note` 记录冲突与采用依据 |
 | `download_count` | integer | 否 | 下载次数（CNKI 特有字段，其他平台为 null） |
 | `open_access_status` | string | 否 | 开放获取状态，如 `gold`、`green`、`hybrid`、`bronze`、`closed`、`unknown` |
 | `license` | string | 否 | 开放许可，如 `cc-by`、`cc-by-nc` |
-| `full_text_status` | string | 否 | 全文访问状态：`open_pdf`、`needs_institution`、`no_open_pdf`、`anti_bot_blocked`、`html_not_pdf`、`unknown` |
-| `pdf_url` | string | 否 | 可公开访问的 PDF 直链 |
+| `full_text_status` | string | 否 | 来源/访问状态（不代表文件验证完成）：`open_pdf`、`login_required`、`needs_institution`、`no_open_pdf`、`anti_bot_blocked`、`html_not_pdf`、`unknown` |
+| `pdf_url` | string | 否 | 来源提供或构造的 PDF 候选链接；仅构造地址时 `full_text_status=unknown`，并保持未验证 |
 | `local_pdf_path` | string | 否 | 本地已下载 OA PDF 路径；仅当 `download_status=downloaded` 时填写 |
 | `download_status` | string | 否 | OA PDF 下载状态：`not_requested`、`eligible`、`downloaded`、`skipped`、`failed`、`not_pdf` |
 | `download_error` | string | 否 | 下载失败或跳过原因，成功时为 null |
-| `download_source` | string | 否 | 实际下载来源，如 `arxiv`、`unpaywall`、`openalex`、`semantic_scholar`、`pubmed_central` |
+| `download_source` | string | 否 | 实际下载来源，v1.3 起统一为实际 URL hostname：下载前取 `pdf_url`，收到响应后取 `final_url`；不根据论文 ID 或聚合平台推断 |
+| `final_url` | string | 否 | 跟随重定向后实际响应 URL；未收到响应为 null |
+| `content_type` | string | 否 | 响应声明的 MIME，不独立作为 PDF 格式证据 |
+| `checked_at` | string | 否 | 本次下载尝试时间，ISO 8601 UTC 时间戳 |
+| `byte_length` | integer | 否 | 完整读取的响应字节数；未读完为 null |
+| `sha256` | string | 否 | 完整响应的 SHA-256；还需结合验证状态，不能单独证明它是 PDF |
+| `http_status` | integer | 否 | 最终 HTTP 状态码；没有响应为 null |
+| `retry_after` | string | 否 | HTTP Retry-After 原值；不存在为 null，不意味着自动重试 |
+| `download_error_code` | string | 否 | 稳定错误类别，见下表；成功为 null |
+| `pdf_verification_status` | string | 否 | 文件格式验证状态，见下表 |
+| `paper_identity_status` | string | 否 | 下载器固定为 `unverified`；独立人工/正文身份核对可记 `matched` 或 `mismatch`，需附 `field_sources.paper_identity_status` 证据 |
 | `data_availability` | string | 否 | 数据可得性说明或数据链接 |
 | `code_url` | string | 否 | 代码仓库链接 |
 | `bibtex` | string | 否 | BibTeX 格式引用 |
 | `source_platforms` | string[] | 是 | 数据来源平台列表（含 `"cnki"` 时表示来自知网） |
+| `missing_fields` | object | 否 | 缺失字段及原因，例如 `{"year":"来源未提供"}` |
 | `fetched_at` | string | 是 | 抓取日期，ISO 8601 格式（YYYY-MM-DD） |
 
 ---
@@ -104,6 +136,31 @@
 | `skipped` | 不满足下载条件，如需要机构权限、无开放 PDF、缺少 URL |
 | `failed` | 网络错误、HTTP 错误或文件写入错误 |
 | `not_pdf` | URL 返回内容不是 PDF 二进制 |
+
+---
+
+## 字段证据与全文判断
+
+- `field_sources` 用字段对应的来源记录；不要仅列一组平台名就让所有字段看起来都得到交叉验证。`evidence_type` 可取 `source_metadata`、`page_text`、`pdf_text`、`download_response` 或 `inference`；推断要说明依据。
+- 引用数的收录范围不同。保留各平台计数和时间，不取最大值来代表统一真值，也不混合计数。用户指定平台时按其选择展示。
+- `open_pdf` 表示可信公开来源明确提供 PDF 入口，可进入下载清单；实际字节仍由 `pdf_verification_status` 描述。只有 arXiv ID 或构造 URL 时仍为 `unknown`。
+- `no_open_pdf` 仅表示本次已检查来源未发现开放入口，必须记录检查范围，不能断言所有公开版本不存在。
+- `html_not_pdf` 只描述所请求 PDF 地址实际返回 HTML，不能推断 HTML 是完整正文或不存在独立 PDF。明确登录要求用 `login_required`，明确机构订阅要求才用 `needs_institution`；挑战用 `anti_bot_blocked`，不把普通登录推断为机构权限。
+- 开放属性与一次请求是否成功分开。访问受阻时保留来源报告的 `open_access_status`，另记录本次失败。
+
+### PDF 验证状态与错误码
+
+| `pdf_verification_status` | 含义 |
+|---|---|
+| `unverified` | 未完成格式验证；manifest 阶段或验证基础设施失败 |
+| `parser_validated` | 字节通过基本 PDF 结构及 `pdfinfo` 解析检查；未确认论文身份 |
+| `structure_checked_parser_unavailable` | 只通过基本签名、结尾、xref 检查；解析器不可用，不能宣称完整文件验证 |
+| `not_pdf` | 响应不具备要求的 PDF 签名/内容 |
+| `invalid_pdf` | PDF 结构或解析检查不通过 |
+
+`download_error_code`：`http_error`、`rate_limited`、`timeout`、`not_pdf`、`invalid_pdf`、`network_error`、`write_error`、`pdf_parser_error`。跳过原因仍保留在原有 `download_error` 中，错误码可为 null。
+
+保留旧 `download_status`：`not_pdf` 对应非 PDF；损坏 PDF 为 `failed` + `invalid_pdf`。下载器不会自动把来源元数据的 `full_text_status` 改成事实真值，展示时必须综合本次验证结果。`downloaded` 仅表示通过当前可用检查并已写入本地；论文身份核对是独立工作。
 
 ---
 
@@ -141,10 +198,10 @@
 
 ### 主键优先级
 
-1. **DOI**（全局唯一，最可靠）：DOI 相同 → 同一篇论文
-2. **arXiv ID**：arXiv ID 相同 → 同一篇论文
+1. **DOI**：去除 DOI URL 前缀、首尾空白，大小写规范化后匹配同一记录；不同版本/更正关系保留，不任意合并
+2. **arXiv ID**：按基础 ID 归组，保留版本后缀；不同版本 PDF 不当作字节相同
 3. **PubMed ID**：PMID 相同 → 同一篇论文
-4. **标题 + 年份 + 作者首字母**：以上都没有时的模糊匹配
+4. **标题 + 年份 + 作者**：仅生成疑似重复候选；核对作者、摘要或来源后再合并，避免同名论文误合并
 
 ### 字段合并策略
 
@@ -152,10 +209,10 @@
 
 | 字段 | 优先来源 |
 |------|---------|
-| `citation_count` | Google Scholar > Semantic Scholar > CNKI > 其他 |
-| `open_access_status` | Unpaywall > 出版商页面 > OpenAlex > 其他 |
-| `full_text_status` | 实际下载/访问验证结果 > Unpaywall > 出版商页面 > 其他 |
-| `pdf_url` | arXiv > Semantic Scholar openAccessPdf > Unpaywall > CNKI > 其他 |
+| `citation_count` | 用户指定来源优先；其余按明确展示口径选择，完整计数保留于 `citation_counts` |
+| `open_access_status` | 保留来源与日期；有冲突时说明，不把任何单个平台当绝对真值 |
+| `full_text_status` | 当前明确访问证据优先；保留独立 OA 声明及字段来源，网络失败不覆盖为“没有开放版本” |
+| `pdf_url` | 优先可核验的合法公开来源；保留候选出处和实际访问结果 |
 | `abstract` | Semantic Scholar > arXiv > CNKI > ACM/IEEE |
 | `venue` | ACM DL > IEEE > CNKI > Semantic Scholar > arXiv |
 | `doi` | ACM DL > IEEE > CNKI > Semantic Scholar > arXiv |
@@ -163,7 +220,7 @@
 | `keywords` | CNKI > 出版商页面 > 其他平台 |
 | `mesh_terms` | PubMed / Europe PMC |
 | `jel_codes` | RePEc / Crossref / 出版商页面 |
-| `code_url` | Papers with Code > 论文官方页面 > GitHub 链接 |
+| `code_url` | 论文/作者官方页面优先；第三方索引和搜索得到的仓库须核验作者关联 |
 | `download_count` | 仅 CNKI 提供，无需合并 |
 
 ### 合并示例

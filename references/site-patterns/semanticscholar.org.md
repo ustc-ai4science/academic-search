@@ -1,71 +1,76 @@
 ---
 domain: semanticscholar.org
-aliases: [Semantic Scholar, S2]
-updated: 2026-04-01
+aliases: [Semantic Scholar, S2, api.semanticscholar.org]
+operations: [search, metadata, citations, author, full_text]
+status: unverified
+environment: official-api
+updated: 2026-09-05
+last_verified: null
 ---
 
-## 平台特征
+# Semantic Scholar
 
-- AI2（艾伦人工智能研究院）维护的学术搜索引擎，覆盖 2 亿+ 论文
-- 有完整的公开 REST API，JSON 格式
-- 无 Key 可用，但速率受限；免费 Key 可提升速率（注册：https://www.semanticscholar.org/product/api#api-key）
-- 引用数据较完整，支持引用/被引查询
-- 支持用多种 ID 互查：DOI、arXiv ID、ACM ID、MAG ID、CorpusId
+本文件整理历史 API 经验，未进行本次线上调用。当前参数、鉴权与额度以 [API cookbook](../api-cookbook.md) 指向的官方文档为准；`updated` 不是验证日期。正常结构化查询优先 API，无需浏览器环境。
 
-## 有效模式
+## 精确查找与字段
 
-### API 根 URL
-
-```
-https://api.semanticscholar.org/graph/v1/
-```
-
-### fields 参数（必须显式指定）
-
-推荐常用组合：
-```
-fields=title,authors,year,abstract,citationCount,externalIds,openAccessPdf,venue,publicationTypes
+```yaml
+id: s2-paper-fields
+operations: [search, metadata, citations, full_text]
+status: unverified
+environment: official-api
+preconditions: [使用当前支持的 paper identifier 与 fields 参数]
+recorded: 2026-04-01
+last_verified: null
+evidence: historical-api-notes
+failure_signals: [未知字段错误, 非成功 HTTP 状态, ID 不匹配, 字段缺失]
+fallback: 查官方参数说明；按 DOI/arXiv ID 转原始来源补齐
+supersedes: null
 ```
 
-完整可用字段：
-- 基础：`title`, `abstract`, `year`, `venue`, `publicationDate`
-- 作者：`authors`（含 `authorId`, `name`）
-- 引用：`citationCount`, `referenceCount`, `influentialCitationCount`
-- 标识：`externalIds`（含 DOI、ArXiv、PubMed、ACM、MAG）
-- PDF：`openAccessPdf`（含 `url`, `status`）
-- 类型：`publicationTypes`（JournalArticle/Conference/Review 等）
+历史 API 根为 `https://api.semanticscholar.org/graph/v1/`，常用精确标识为 `DOI:{doi}`、`ARXIV:{id}`、S2 paperId。按目标显式请求字段；完整元数据任务继续补摘要、作者、标识、venue 等已要求字段，不因默认轻量策略提前结束。
 
-### paperId 格式
+- `externalIds.ArXiv` 大小写敏感；仅有 ID 时构造的是候选 URL。
+- `openAccessPdf.url` 可作为来源报告的开放 PDF 入口，记录来源与时间；实际字节和论文身份依 [全文工作流](../full-text-workflow.md) 单独核验。
+- `openAccessPdf=null` 不代表没有 PDF；`abstract=null` 不代表原论文没有摘要；`citationCount` 缺失不等于 0。
+- 引用数与关系边保留 S2 来源，不能用 Scholar 的数值覆盖后丢掉原计数。
+- 多个已知 ID 的详情请求可用官方 batch 接口；关键词搜索仍需 search，不能用 batch 代替发现未知论文。批量大小按当前官方限制分段，不将历史 500 条当永久保证。
 
-Semantic Scholar 接受多种 ID 格式作为 paper identifier：
+## 限流与故障
 
-| 格式 | 示例 |
-|------|------|
-| S2 内部 ID | `649def34f8be52c8b66281af98ae884c09aef38a` |
-| DOI | `DOI:10.18653/v1/P16-1162` |
-| arXiv ID | `ARXIV:1706.03762` |
-| ACM | `ACM:3295222.3295349` |
-| MAG | `MAG:112218234` |
-| CorpusId | `CorpusId:13756489` |
-
-### 作者 ID
-
-作者 `authorId` 是数字字符串，可通过 author/search 获取：
-```
-/graph/v1/author/search?query={name}&fields=name,affiliations,paperCount
+```yaml
+id: s2-bounded-rate-limit-recovery
+operations: [search, metadata, citations, author]
+status: unverified
+environment: official-api
+preconditions: [已保留 HTTP 状态及可用响应头, 多执行者协调平台预算]
+last_verified: null
+evidence: workflow-policy-not-live-verified
+failure_signals: [HTTP 429, 重试预算耗尽, 非法或过长的 Retry-After]
+fallback: 停止该来源并记录限制；用原始论文来源、Crossref 或 OpenAlex 补全可得字段
+supersedes: null
 ```
 
-### 推荐论文
+429 仅表明本次请求受限，不能凭状态码推断永久配额耗尽或一定是短暂波动。解析有效 `Retry-After`（秒数或 HTTP 日期）；没有可用提示时使用带抖动的指数退避。同一请求默认最多 2 次重试、总等待预算 30 秒，这是本 Skill 的操作预算，不是平台承诺。要求等待超过剩余预算时停止，不缩短后提前重试。
 
+并行执行者共享平台限流预算，不能各自重试放大流量。先处理错误响应，再读取 `data`：429、401、403、5xx 或异常 JSON 不得当作空结果。只有合法成功响应中的零结果才表示该次查询未命中；必要时改写查询或换来源，记录覆盖范围。鉴权额度遵从官方规定，不假定申请 Key 一定解决所有限流。
+
+## 作者消歧与分页
+
+```yaml
+id: s2-author-records
+operations: [author]
+status: unverified
+environment: official-api
+preconditions: [作者身份已通过机构或论文记录交叉确认]
+recorded: 2026-04-01
+last_verified: null
+evidence: historical-api-notes
+failure_signals: [同名作者, 分页重复, 返回数量与覆盖声明不符]
+fallback: 核对作者主页及论文原始记录，保留未完成的分页范围
+supersedes: null
 ```
-/recommendations/v1/papers/?positivePaperIds={id1},{id2}&fields=title,year,citationCount
-```
 
-## 已知陷阱
+搜索作者后先消歧，再按当前接口的分页信号获取论文。姓名相同不能自动视为同一作者；论文接口中的 authors 可能不含完整机构信息，按任务需要查作者详情。分页累计唯一标识并记录中断点；未取完时不写“全部论文”。
 
-- `externalIds.ArXiv` 中 A 大写，代码中字段名大小写敏感（发现于 2026-04-01）
-- `openAccessPdf` 为 null 不代表无 PDF，仅代表 S2 未收录该 PDF；此时需用 arXiv 或 Unpaywall 补充
-- `authors` 字段默认只返回 `authorId` 和 `name`，不含机构信息，需单独查询 author 端点
-- 批量查询（/paper/batch）上限 500 篇，超出需分批
-- 无 Key 时偶发 429，重试间隔 10s 以上
-- 某些非英文论文的 `abstract` 字段为 null，即使论文本身有摘要
+修改以上经验需要 Skill 维护授权。只改文档或未执行验证时，保持 `status: unverified`、`last_verified: null`；普通检索不自动写全局个人记忆。

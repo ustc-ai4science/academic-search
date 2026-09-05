@@ -1,6 +1,10 @@
 # Academic Platform API Cookbook
 
-各学术平台 API 调用速查。所有示例均可直接复制执行。
+各学术平台 API 调用模板。执行前替换标识和真实联系信息，检查当前服务文档、认证和配额；模板及历史字段不构成实时可用性保证。浏览器操作只在相关站点 reference 中维护。
+
+## 限流与请求预算
+
+先解析状态与错误响应，再提取结果。429 不证明永久配额耗尽；遵守有效 `Retry-After`，没有提示时有界退避。同一请求默认最多 2 次重试、总等待预算 30 秒；服务要求等待超过剩余预算时停止该来源，不提前重试。这是本 Skill 的预算，不是平台配额承诺。并行任务共享平台预算；详见 [S2 恢复规则](site-patterns/semanticscholar.org.md)。
 
 ---
 
@@ -164,7 +168,7 @@ curl -s "https://api.crossref.org/journals/2041-1723/works?rows=10&mailto=your@e
 ## OpenAlex
 
 **根 URL**：`https://api.openalex.org`  
-**鉴权**：无需；建议带 `mailto` 参数  
+**鉴权**：当前官方文档允许无 Key 试用，API Key 可提升预算；认证和限额以 [官方 API 文档](https://help.openalex.org/api/) 为准（2026-09-05 核对），不假定匿名访问无限制
 **格式**：JSON  
 **适用**：跨学科作者、机构、概念、引用关系和开放获取状态补充
 
@@ -192,7 +196,7 @@ curl -s "https://api.openalex.org/authors?search=Yann+LeCun&per-page=10&mailto=y
 | `type` | publication_type |
 | `cited_by_count` | citation_count |
 | `open_access.oa_status` | open_access_status |
-| `primary_location.pdf_url` | pdf_url |
+| `best_oa_location.pdf_url` / `primary_location.pdf_url` | pdf_url（候选，另记来源与验证状态） |
 
 **注意**：OpenAlex 的概念分类适合跨学科召回，但具体期刊/会议质量仍应按 discipline profile 判断。
 
@@ -226,11 +230,12 @@ curl -s "https://api.unpaywall.org/v2/10.1038/nature12373?email=your@email.com"
 
 | 条件 | 状态 |
 |------|------|
-| `best_oa_location.url_for_pdf` 存在且响应为 PDF | `open_pdf` |
-| `is_oa=false` | `no_open_pdf` |
-| 出版商页面存在但 PDF 需要登录/订阅 | `needs_institution` |
-| PDF URL 返回 HTML | `html_not_pdf` |
-| 403、Cloudflare、验证码 | `anti_bot_blocked` |
+| 可信来源明确提供 `best_oa_location.url_for_pdf` | 来源支持的 `open_pdf`，`pdf_verification_status` 未验证；下载后检查字节 |
+| `is_oa=false` | 仅记录该来源未找到开放版本；若本次检查结束则 `no_open_pdf` 并记录范围 |
+| 页面明确要求普通登录 | `login_required` |
+| 页面明确要求机构订阅/权限 | `needs_institution` |
+| PDF URL 返回 HTML | `html_not_pdf`；不能据此断言正文可读或无独立 PDF |
+| 明确识别到 Cloudflare/验证码挑战 | `anti_bot_blocked`；单独 403 不足以确定原因 |
 
 ---
 
@@ -273,42 +278,13 @@ curl -s "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&i
 
 ---
 
-## Papers with Code
+## Papers with Code（历史接口）
 
-**根 URL**：`https://paperswithcode.com/api/v1`  
-**鉴权**：无需  
-**格式**：JSON  
-**速率**：无官方说明，适度使用
+旧 `https://paperswithcode.com/api/v1/` 模板不作为默认运行路径。本次未确认旧接口持续返回所需 JSON；不得把历史 API 的存在当成当前可用性。
 
-```bash
-# 搜索论文
-curl -s "https://paperswithcode.com/api/v1/papers/?q=object+detection&items_per_page=10"
+代码发现优先读取论文正文、作者项目页及其指向的官方仓库。目录或聚合页面可提供候选，但应核对论文标识与仓库作者关系。确需历史接口时，先检查响应状态、最终 URL 和 JSON schema；失败后记录限制并切换来源，不把失败解释为论文没有代码。
 
-# 获取论文详情
-curl -s "https://paperswithcode.com/api/v1/papers/{paper_id}/"
-
-# 获取论文对应代码仓库
-curl -s "https://paperswithcode.com/api/v1/papers/{paper_id}/repositories/"
-
-# 获取论文在 benchmark 上的结果
-curl -s "https://paperswithcode.com/api/v1/papers/{paper_id}/results/"
-
-# 按方法搜索
-curl -s "https://paperswithcode.com/api/v1/methods/?q=transformer"
-```
-
-**响应字段映射**：
-
-| JSON 字段 | 标准字段 |
-|-----------|---------|
-| `title` | title |
-| `authors` | authors[] |
-| `published` | year（前 4 位） |
-| `abstract` | abstract |
-| `arxiv_id` | arxiv_id |
-| `url_pdf` | pdf_url |
-
-**独特价值**：`repositories` 端点可直接获取论文对应 GitHub 仓库（stars、框架、官方/非官方标注）。
+相关经验见 [paperswithcode.com](site-patterns/paperswithcode.com.md)。
 
 ---
 
@@ -374,164 +350,15 @@ curl -s -A "Mozilla/5.0" "https://ieeexplore.ieee.org/document/9607200/"
 
 ## Google Scholar
 
-**官方 API**：无  
-**唯一可靠方式**：CDP 浏览器自动化（直连用户 Chrome）  
-**不要尝试**：WebFetch、curl、WebSearch 搜索 scholar.google.com
+使用当前可用的浏览器能力，具体流程、历史选择器和失效回退见 [Scholar 站点经验](site-patterns/scholar.google.com.md)。
 
-### CDP 操作流程
-
-```bash
-# 1. 确保 CDP Proxy 就绪
-bash ~/.claude/skills/academic-search/scripts/check-deps.sh
-
-# 2. 打开 Google Scholar 搜索页
-TARGET=$(curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/new?url=https://scholar.google.com" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).targetId")
-
-# 3. 用搜索框搜索（GUI 方式，最稳定）
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/eval?target=$TARGET" \
-  -d 'document.querySelector("input[name=q]").value = "attention is all you need"'
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/click?target=$TARGET" -d 'button[type=submit], input[type=submit]'
-
-# 4. 等待结果加载后提取
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/eval?target=$TARGET" -d '
-JSON.stringify(Array.from(document.querySelectorAll(".gs_ri")).slice(0,10).map(el => ({
-  title: el.querySelector(".gs_rt a")?.textContent?.trim(),
-  link: el.querySelector(".gs_rt a")?.href,
-  authors_venue: el.querySelector(".gs_a")?.textContent?.trim(),
-  cited_by: el.querySelector(".gs_fl a")?.textContent?.match(/Cited by (\d+)/)?.[1]
-})))
-'
-
-# 5. 完成后关闭 tab
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/close?target=$TARGET"
-```
-
-**主要用途**：获取引用数（Scholar 引用数最全面）、发现其他平台未收录的论文、查看相关论文推荐。
-
-**注意**：操作间隔不要过短，避免触发 CAPTCHA。详见 `site-patterns/scholar.google.com.md`。
-
----
+- 来源计数必须带平台与查询时间，不宣称任何平台的数字是全局真值。
+- 先根据当前页面识别输入框、结果列表、空结果与挑战页；命中结果条件后再提取。
+- `Cited by` 选择器失效或结果暂未渲染，不等于引用数为零。
+- 使用自建 target，完成后仅关闭本任务创建的标签页。
 
 ## CNKI（中国知网）
 
-**官方 API**：无公开 API
-**唯一可靠方式**：CDP 浏览器自动化（直连用户 Chrome，需携带机构登录态）
-**不要尝试**：curl 直接爬取（反爬严重，结果为 JS 渲染页）、任何第三方非官方 API
-**主要使用场景**：中文期刊论文、硕博学位论文、中文会议论文、被引/下载统计
+检索入口、数据库代码和字段提取模板统一见 [CNKI 站点经验](site-patterns/cnki.net.md)，不要在此复制第二套选择器或固定等待流程。
 
-### 登录态说明
-
-| 访问级别 | 能获得什么 | 如何实现 |
-|---------|-----------|---------|
-| 未登录 | 标题、作者、来源、年份、摘要（部分截断） | CDP 直接打开 cnki.net |
-| 机构 IP / 机构账号登录 | 全文 CAJ / PDF 下载链接 | 用户在 Chrome 中完成机构认证后再用 CDP |
-| 个人 CNKI 账号 | 引用/下载统计、收藏记录 | 同上 |
-
-> 通常仅需摘要和元数据时，未登录即可。如需全文下载链接，需用户先在 Chrome 完成机构认证。
-
-### CDP 操作流程
-
-```bash
-# 1. 确保 CDP Proxy 就绪
-bash ~/.claude/skills/academic-search/scripts/check-deps.sh
-
-# 2. 打开知网检索页（KNS8 新版界面）
-TARGET=$(curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/new?url=https://kns.cnki.net/kns8/defaultresult/index" \
-  | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).targetId")
-
-# 3. 等待页面加载（JS 渲染较慢）
-sleep 3
-
-# 4. 填入搜索词
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/eval?target=$TARGET" \
-  -d 'document.querySelector("#txt_SearchText").value = "大语言模型 时序预测"'
-
-# 5. 点击检索按钮
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/click?target=$TARGET" \
-  -d '#btnSearch'
-
-# 6. 等待结果列表渲染
-sleep 3
-
-# 7. 提取结果（最多 20 条）
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/eval?target=$TARGET" -d '
-JSON.stringify(
-  Array.from(document.querySelectorAll(".result-table-list tbody tr")).slice(0, 20).map(tr => ({
-    title:     tr.querySelector("td.name a")?.textContent?.trim(),
-    url:       tr.querySelector("td.name a")?.href,
-    authors:   tr.querySelector("td.author")?.textContent?.trim(),
-    source:    tr.querySelector("td.source a")?.textContent?.trim(),
-    date:      tr.querySelector("td.date")?.textContent?.trim(),
-    database:  tr.querySelector("td.db")?.textContent?.trim(),
-    cite:      tr.querySelector("td.quote a")?.textContent?.trim(),
-    download:  tr.querySelector("td.download a")?.textContent?.trim()
-  }))
-)
-'
-
-# 8. 关闭 tab
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/close?target=$TARGET"
-```
-
-### 通过直接 URL 跳转（带预设关键词）
-
-```bash
-# 构造搜索 URL：crossids 限定期刊+学位论文+会议论文
-QUERY=$(python3 -c "import urllib.parse; print(urllib.parse.quote('深度学习 时序'))")
-TARGET=$(curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/new?url=https://kns.cnki.net/kns8/defaultresult/index?crossids=YSTT4HG0%2CLSTPFHG2%2CIPFD9Y60&korder=SU&kw=${QUERY}" \
-  | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).targetId")
-sleep 4
-# 然后执行步骤 7 提取结果
-```
-
-### 获取单篇详情（摘要、关键词、基金）
-
-```bash
-# 在详情页提取结构化元数据
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/eval?target=$TARGET" -d '
-(() => {
-  const get = sel => document.querySelector(sel)?.textContent?.trim() ?? null;
-  const getAll = sel => Array.from(document.querySelectorAll(sel)).map(el => el.textContent.trim());
-  return JSON.stringify({
-    title:     get("h1.title") ?? get(".doc-top h1"),
-    authors:   getAll(".author a"),
-    source:    get(".source a"),
-    date:      get(".date") ?? get(".info-item .date"),
-    abstract:  get("#ChDivSummary") ?? get(".abstract-text"),
-    keywords:  getAll(".keyword a"),
-    fund:      get(".fund a"),
-    doi:       get(".doi a"),
-    cnki_url:  location.href
-  });
-})()
-'
-```
-
-### crossids 数据库代码
-
-| 代码 | 数据库 | 说明 |
-|------|--------|------|
-| `YSTT4HG0` | 中国学术期刊网络出版总库（CNKI） | 主力期刊库，最常用 |
-| `LSTPFHG2` | 中国博硕士学位论文全文数据库 | 硕博论文 |
-| `IPFD9Y60` | 中国重要会议论文全文数据库 | 会议论文 |
-| `WSLHLHGH` | 中国重要报纸全文数据库 | 学术性低，一般不选 |
-| `NYHFWBF4` | 中国年鉴网络出版总库 | 年鉴统计，专项使用 |
-
-**建议默认组合**（学术搜索）：`YSTT4HG0,LSTPFHG2,IPFD9Y60`
-
-### 响应字段映射
-
-| DOM 元素 / 字段 | 标准 Schema 字段 |
-|----------------|----------------|
-| `td.name a` / `h1.title` | `title` |
-| `td.author` / `.author a` | `authors[]` |
-| `td.source a` / `.source a` | `venue` |
-| `td.date` / `.date` | `year`（取前 4 位） |
-| `td.quote a` | `citation_count` |
-| `td.download a` | `download_count`（CNKI 特有） |
-| `#ChDivSummary` | `abstract` |
-| `.keyword a` | `keywords[]` |
-| `.doi a` | `doi` |
-| `location.href` | `cnki_url`（CNKI 特有） |
-
-**注意**：`source_platforms` 中记为 `"cnki"`。详见 `site-patterns/cnki.net.md`。
+当前能读取的字段取决于页面与会话状态。需要机构权限、登录或挑战时记录限制；元数据可读不代表全文开放。保留 `cnki_url` 和来源时间，引用/下载统计分别记录。浏览器通用闭环见 [browser-workflow](browser-workflow.md)。

@@ -10,12 +10,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
+import { randomUUID } from 'node:crypto';
 
 const PORT = parseInt(process.env.CDP_PROXY_PORT || '3456');
+const INSTANCE_ID = randomUUID();
 let ws = null;
 let cmdId = 0;
-const pending = new Map(); // id -> {resolve, timer}
+const pending = new Map(); // id -> {resolve, reject, timer}
 const sessions = new Map(); // targetId -> sessionId
+const navigationVersions = new Map(); // sessionId -> main-document navigation generation
+const mainFrames = new Map(); // sessionId -> frameId
 
 // --- WebSocket 兼容层 ---
 let WS;
@@ -173,10 +177,18 @@ async function connect() {
     };
     const onClose = () => {
       console.log('[CDP Proxy] 连接断开');
+      const error = apiError('WebSocket 连接已断开', 'CDP_DISCONNECTED', 503);
+      for (const command of pending.values()) {
+        clearTimeout(command.timer);
+        command.reject(error);
+      }
+      pending.clear();
       ws = null;
       chromePort = null;
       chromeWsPath = null;
       sessions.clear();
+      navigationVersions.clear();
+      mainFrames.clear();
     };
     const onMessage = (evt) => {
       const data = typeof evt === 'string' ? evt : (evt.data || evt);
@@ -185,6 +197,13 @@ async function connect() {
       if (msg.method === 'Target.attachedToTarget') {
         const { sessionId, targetInfo } = msg.params;
         sessions.set(targetInfo.targetId, sessionId);
+      }
+      if (msg.method === 'Page.frameNavigated' && !msg.params.frame.parentId) {
+        mainFrames.set(msg.sessionId, msg.params.frame.id);
+        navigationVersions.set(msg.sessionId, (navigationVersions.get(msg.sessionId) || 0) + 1);
+      }
+      if (msg.method === 'Page.navigatedWithinDocument' && msg.params.frameId === mainFrames.get(msg.sessionId)) {
+        navigationVersions.set(msg.sessionId, (navigationVersions.get(msg.sessionId) || 0) + 1);
       }
       if (msg.id && pending.has(msg.id)) {
         const { resolve, timer } = pending.get(msg.id);
@@ -213,32 +232,34 @@ async function connect() {
   });
 }
 
-function sendCDP(method, params = {}, sessionId = null) {
+function sendCDP(method, params = {}, sessionId = null, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     if (!ws || (ws.readyState !== WS.OPEN && ws.readyState !== 1)) {
-      return reject(new Error('WebSocket 未连接'));
+      return reject(apiError('WebSocket 未连接', 'CDP_DISCONNECTED', 503));
     }
     const id = ++cmdId;
     const msg = { id, method, params };
     if (sessionId) msg.sessionId = sessionId;
     const timer = setTimeout(() => {
       pending.delete(id);
-      reject(new Error('CDP 命令超时: ' + method));
-    }, 30000);
-    pending.set(id, { resolve, timer });
+      reject(apiError('CDP 命令超时: ' + method, 'CDP_TIMEOUT', 504));
+    }, Math.max(1, timeoutMs));
+    pending.set(id, { resolve, reject, timer });
     ws.send(JSON.stringify(msg));
   });
 }
 
-function sendCDPChecked(method, params = {}, sessionId = null) {
-  return sendCDP(method, params, sessionId).then((resp) => {
+function sendCDPChecked(method, params = {}, sessionId = null, timeoutMs = 30000) {
+  return sendCDP(method, params, sessionId, timeoutMs).then((resp) => {
     if (resp?.error) {
       const detail = [resp.error.message, resp.error.data].filter(Boolean).join(' - ');
       const err = new Error(detail || `CDP error: ${method}`);
-      err.code = resp.error.code;
+      err.code = 'CDP_ERROR';
+      err.cdp_code = resp.error.code;
       err.data = resp.error.data;
       if (/No target with given id found|No session with given id|Target closed|Session closed/i.test(detail)) {
         err.statusCode = 404;
+        err.code = 'TARGET_NOT_FOUND';
       } else {
         err.statusCode = resp.error.code === -32602 ? 400 : 502;
       }
@@ -248,6 +269,16 @@ function sendCDPChecked(method, params = {}, sessionId = null) {
   });
 }
 
+function apiError(message, code, statusCode = 400, details = {}) {
+  return Object.assign(new Error(message), { code, statusCode, ...details });
+}
+
+function errorPayload(error) {
+  return { error: error.message, code: error.code || 'INTERNAL_ERROR',
+    ...(error.cdp_code !== undefined ? { cdp_code: error.cdp_code } : {}),
+    ...(error.data !== undefined ? { data: error.data } : {}) };
+}
+
 function json(res, statusCode, payload) {
   res.statusCode = statusCode;
   res.end(JSON.stringify(payload));
@@ -255,7 +286,7 @@ function json(res, statusCode, payload) {
 
 function requireQueryParam(res, value, name) {
   if (value) return true;
-  json(res, 400, { error: `缺少必填参数: ${name}` });
+  json(res, 400, { error: `缺少必填参数: ${name}`, code: 'MISSING_PARAMETER', parameter: name });
   return false;
 }
 
@@ -269,33 +300,142 @@ async function ensureSession(targetId) {
   throw new Error('attach 失败: ' + JSON.stringify(resp.error));
 }
 
-// --- 等待页面加载 ---
-async function waitForLoad(sessionId, timeoutMs = 15000) {
-  await sendCDP('Page.enable', {}, sessionId);
+// Poll sequentially and cap every CDP command at the remaining budget.
+// document.readyState describes document loading, not application results.
+function boundedInteger(value, fallback, name, min = 1, max = 60000) {
+  const number = value === undefined ? fallback : value;
+  if (!Number.isInteger(number) || number < min || number > max) {
+    throw apiError(`${name} 必须是 ${min} 到 ${max} 的整数`, 'INVALID_ARGUMENT');
+  }
+  return number;
+}
 
-  return new Promise((resolve) => {
-    let resolved = false;
-    const done = (result) => {
-      if (resolved) return;
-      resolved = true;
-      clearTimeout(timer);
-      clearInterval(checkInterval);
-      resolve(result);
-    };
+async function waitForLoad(sessionId, timeoutMs = 15000, navigationAfter = null) {
+  const deadline = performance.now() + timeoutMs;
+  try {
+    await sendCDPChecked('Page.enable', {}, sessionId, timeoutMs);
+    while (performance.now() < deadline) {
+      if (navigationAfter !== null && (navigationVersions.get(sessionId) || 0) <= navigationAfter) {
+        await new Promise(resolve => setTimeout(resolve, Math.min(25, Math.max(0, deadline - performance.now()))));
+        continue;
+      }
+      const resp = await sendCDPChecked('Runtime.evaluate', {
+        expression: 'document.readyState', returnByValue: true,
+      }, sessionId, deadline - performance.now());
+      if (resp.result?.exceptionDetails) {
+        throw apiError(resp.result.exceptionDetails.text, 'EVALUATION_FAILED', 502);
+      }
+      if (resp.result?.result?.value === 'complete') return { load_status: 'complete' };
+      await new Promise(resolve => setTimeout(resolve, Math.min(250, Math.max(0, deadline - performance.now()))));
+    }
+  } catch (error) {
+    if (error.code !== 'CDP_TIMEOUT') return { load_status: 'error', ...errorPayload(error) };
+  }
+  return { load_status: 'timeout' };
+}
 
-    const timer = setTimeout(() => done('timeout'), timeoutMs);
-    const checkInterval = setInterval(async () => {
-      try {
-        const resp = await sendCDP('Runtime.evaluate', {
-          expression: 'document.readyState',
-          returnByValue: true,
-        }, sessionId);
-        if (resp.result?.result?.value === 'complete') {
-          done('complete');
-        }
-      } catch { /* 忽略 */ }
-    }, 500);
+const WAIT_STATES = new Set(['results_ready', 'blocked', 'empty', 'login_required', 'rate_limited']);
+function validateWait(body) {
+  if (!body || !Array.isArray(body.conditions) || body.conditions.length < 1 || body.conditions.length > 20) {
+    throw apiError('conditions 必须包含 1 到 20 个条件', 'INVALID_ARGUMENT');
+  }
+  const conditions = body.conditions.map(condition => {
+    if (!condition || !WAIT_STATES.has(condition.state) || typeof condition.selector !== 'string' ||
+        !condition.selector.trim() || (condition.visible !== undefined && typeof condition.visible !== 'boolean')) {
+      throw apiError('每个条件需要受支持的 state、CSS selector 和可选布尔 visible', 'INVALID_ARGUMENT');
+    }
+    return { state: condition.state, selector: condition.selector, visible: condition.visible ?? true };
   });
+  return { conditions, timeout_ms: boundedInteger(body.timeout_ms, 15000, 'timeout_ms'),
+    poll_ms: boundedInteger(body.poll_ms, 250, 'poll_ms', 1, 5000) };
+}
+
+// Serialized into the page. This function only reads current DOM state.
+function observeConditions(conditions) {
+  const diagnostics = [];
+  let matched;
+  for (const condition of conditions) {
+    let elements;
+    try { elements = Array.from(document.querySelectorAll(condition.selector)); }
+    catch (error) { return { error: error.message, code: 'INVALID_SELECTOR', selector: condition.selector }; }
+    const visibleCount = elements.filter(element => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && style.visibility !== 'collapse' &&
+        rect.width > 0 && rect.height > 0 && element.getClientRects().length > 0;
+    }).length;
+    const diagnostic = { ...condition, match_count: elements.length, visible_count: visibleCount };
+    diagnostics.push(diagnostic);
+    if (!matched && (condition.visible ? visibleCount > 0 : elements.length > 0)) matched = diagnostic;
+  }
+  return { matched, diagnostics };
+}
+
+async function waitForConditions(sessionId, options) {
+  const started = performance.now();
+  const deadline = started + options.timeout_ms;
+  let diagnostics = [];
+  const expression = `(${observeConditions.toString()})(${JSON.stringify(options.conditions)})`;
+  while (performance.now() < deadline) {
+    try {
+      const response = await sendCDPChecked('Runtime.evaluate', {
+        expression, returnByValue: true,
+      }, sessionId, deadline - performance.now());
+      const observation = evaluatedValue(response);
+      if (observation.error) return observation;
+      diagnostics = observation.diagnostics;
+      if (observation.matched) {
+        const { state, selector, visible, match_count, visible_count } = observation.matched;
+        return { state, matched: true, elapsed_ms: Math.round(performance.now() - started),
+          condition: { state, selector, visible }, diagnostics: { match_count, visible_count } };
+      }
+    } catch (error) {
+      if (error.code === 'CDP_TIMEOUT') break;
+      throw error;
+    }
+    await new Promise(resolve => setTimeout(resolve, Math.min(options.poll_ms, Math.max(0, deadline - performance.now()))));
+  }
+  return { error: '等待页面条件超时', code: 'WAIT_TIMEOUT', state: 'timeout', matched: false,
+    elapsed_ms: Math.round(performance.now() - started), diagnostics };
+}
+
+function evaluatedValue(response) {
+  if (response.result?.exceptionDetails) {
+    const detail = response.result.exceptionDetails;
+    throw apiError(detail.exception?.description || detail.text, 'EVALUATION_FAILED');
+  }
+  if (response.result?.result?.value === undefined) throw apiError('页面未返回可序列化结果', 'EVALUATION_FAILED', 502);
+  return response.result.result.value;
+}
+
+// Selection and click occur in one page evaluation so ambiguity is checked before mutation.
+function selectElement(selector, action) {
+  let elements;
+  try { elements = Array.from(document.querySelectorAll(selector)); }
+  catch (error) { return { error: error.message, code: 'INVALID_SELECTOR', selector }; }
+  const candidates = elements.slice(0, 5).map(el => ({ tag: el.tagName, id: el.id, text: (el.textContent || '').slice(0, 100) }));
+  const details = { selector, match_count: elements.length, candidates };
+  if (!elements.length) return { error: '未找到元素: ' + selector, code: 'ELEMENT_NOT_FOUND', ...details };
+  if (elements.length > 1) return { error: '选择器匹配多个元素: ' + selector, code: 'SELECTOR_AMBIGUOUS', ...details };
+  const el = elements[0];
+  if (action === 'inspect') return { ...details, tag: el.tagName, type: el.getAttribute('type') };
+  el.scrollIntoView({ block: 'center' });
+  if (action === 'click') {
+    el.click();
+    return { clicked: true, ...candidates[0], ...details };
+  }
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return { error: '元素没有可点击区域: ' + selector, code: 'ELEMENT_NOT_VISIBLE', ...details };
+  return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, ...candidates[0], ...details };
+}
+
+async function evaluateSelection(sessionId, selector, action) {
+  if (typeof selector !== 'string' || !selector.trim()) throw apiError('POST body 需要 CSS 选择器', 'INVALID_ARGUMENT');
+  const response = await sendCDPChecked('Runtime.evaluate', {
+    expression: `(${selectElement.toString()})(${JSON.stringify(selector)}, ${JSON.stringify(action)})`,
+    returnByValue: true,
+  }, sessionId);
+  return evaluatedValue(response);
 }
 
 // --- 读取 POST body ---
@@ -307,7 +447,7 @@ async function readBody(req) {
 
 // --- HTTP API ---
 const server = http.createServer(async (req, res) => {
-  const parsed = new URL(req.url, `http://localhost:${PORT}`);
+  const parsed = new URL(req.url, `http://127.0.0.1:${server.address().port}`);
   const pathname = parsed.pathname;
   const q = Object.fromEntries(parsed.searchParams);
 
@@ -320,7 +460,8 @@ const server = http.createServer(async (req, res) => {
         await connect().catch(() => {});
         connected = ws && (ws.readyState === WS.OPEN || ws.readyState === 1);
       }
-      res.end(JSON.stringify({ status: 'ok', connected, sessions: sessions.size, chromePort }));
+      res.end(JSON.stringify({ status: 'ok', connected: Boolean(connected), sessions: sessions.size, chromePort,
+        pid: process.pid, instance_id: INSTANCE_ID, port: server.address()?.port }));
       return;
     }
 
@@ -335,18 +476,22 @@ const server = http.createServer(async (req, res) => {
 
     // GET /new?url=xxx
     else if (pathname === '/new') {
+      const timeoutMs = boundedInteger(q.timeout_ms === undefined ? undefined : Number(q.timeout_ms), 15000, 'timeout_ms');
       const targetUrl = q.url || 'about:blank';
-      const resp = await sendCDPChecked('Target.createTarget', { url: targetUrl, background: true });
+      const resp = await sendCDPChecked('Target.createTarget', { url: 'about:blank', background: true });
       const targetId = resp.result.targetId;
 
-      if (targetUrl !== 'about:blank') {
-        try {
-          const sid = await ensureSession(targetId);
-          await waitForLoad(sid);
-        } catch { /* 非致命 */ }
-      }
-
-      res.end(JSON.stringify({ targetId }));
+      let load;
+      try {
+        const sid = await ensureSession(targetId);
+        // Navigate after attachment so the initial blank document cannot satisfy the load check.
+        if (targetUrl !== 'about:blank') {
+          const navigation = await sendCDPChecked('Page.navigate', { url: targetUrl }, sid);
+          if (navigation.result.errorText) throw apiError(navigation.result.errorText, 'NAVIGATION_FAILED', 502);
+        }
+        load = await waitForLoad(sid, timeoutMs);
+      } catch (error) { load = { load_status: 'error', ...errorPayload(error) }; }
+      res.end(JSON.stringify({ targetId, ...load }));
     }
 
     // GET /close?target=xxx
@@ -354,9 +499,12 @@ const server = http.createServer(async (req, res) => {
       if (!requireQueryParam(res, q.target, 'target')) return;
       const resp = await sendCDPChecked('Target.closeTarget', { targetId: q.target });
       if (!resp.result?.success) {
-        json(res, 404, { error: `未找到或无法关闭 target: ${q.target}` });
+        json(res, 404, { error: `未找到或无法关闭 target: ${q.target}`, code: 'TARGET_NOT_FOUND' });
         return;
       }
+      const closedSession = sessions.get(q.target);
+      navigationVersions.delete(closedSession);
+      mainFrames.delete(closedSession);
       sessions.delete(q.target);
       res.end(JSON.stringify(resp.result));
     }
@@ -365,19 +513,51 @@ const server = http.createServer(async (req, res) => {
     else if (pathname === '/navigate') {
       if (!requireQueryParam(res, q.target, 'target')) return;
       if (!requireQueryParam(res, q.url, 'url')) return;
+      const timeoutMs = boundedInteger(q.timeout_ms === undefined ? undefined : Number(q.timeout_ms), 15000, 'timeout_ms');
       const sid = await ensureSession(q.target);
       const resp = await sendCDPChecked('Page.navigate', { url: q.url }, sid);
-      await waitForLoad(sid);
-      res.end(JSON.stringify(resp.result));
+      if (resp.result.errorText) {
+        json(res, 502, { ...resp.result, error: resp.result.errorText, code: 'NAVIGATION_FAILED', load_status: 'error' });
+        return;
+      }
+      const load = await waitForLoad(sid, timeoutMs);
+      res.end(JSON.stringify({ ...resp.result, ...load }));
     }
 
     // GET /back?target=xxx
     else if (pathname === '/back') {
       if (!requireQueryParam(res, q.target, 'target')) return;
+      const timeoutMs = boundedInteger(q.timeout_ms === undefined ? undefined : Number(q.timeout_ms), 15000, 'timeout_ms');
       const sid = await ensureSession(q.target);
-      await sendCDPChecked('Runtime.evaluate', { expression: 'history.back()' }, sid);
-      await waitForLoad(sid);
-      res.end(JSON.stringify({ ok: true }));
+      const history = await sendCDPChecked('Page.getNavigationHistory', {}, sid);
+      const entry = history.result.entries[history.result.currentIndex - 1];
+      if (!entry) {
+        res.end(JSON.stringify({ ok: true, load_status: 'complete', navigated: false }));
+        return;
+      }
+      await sendCDPChecked('Page.enable', {}, sid);
+      const tree = await sendCDPChecked('Page.getFrameTree', {}, sid);
+      mainFrames.set(sid, tree.result.frameTree.frame.id);
+      const navigationAfter = navigationVersions.get(sid) || 0;
+      await sendCDPChecked('Page.navigateToHistoryEntry', { entryId: entry.id }, sid);
+      const load = await waitForLoad(sid, timeoutMs, navigationAfter);
+      res.end(JSON.stringify({ ok: true, navigated: true, ...load }));
+    }
+
+    // POST /wait?target=xxx; ordered alternatives, never a DOM mutation.
+    else if (pathname === '/wait') {
+      if (req.method !== 'POST') {
+        json(res, 405, { error: '/wait 需要 POST', code: 'METHOD_NOT_ALLOWED' });
+        return;
+      }
+      if (!requireQueryParam(res, q.target, 'target')) return;
+      let body;
+      try { body = JSON.parse(await readBody(req)); }
+      catch { throw apiError('POST body 需要合法 JSON', 'INVALID_ARGUMENT'); }
+      const options = validateWait(body);
+      const sid = await ensureSession(q.target);
+      const result = await waitForConditions(sid, options);
+      json(res, result.code === 'WAIT_TIMEOUT' ? 408 : result.error ? 400 : 200, result);
     }
 
     // POST /eval?target=xxx
@@ -395,80 +575,28 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ value: resp.result.result.value }));
       } else if (resp.result?.exceptionDetails) {
         res.statusCode = 400;
-        res.end(JSON.stringify({ error: resp.result.exceptionDetails.text }));
+        res.end(JSON.stringify({ error: resp.result.exceptionDetails.exception?.description || resp.result.exceptionDetails.text, code: 'EVALUATION_FAILED' }));
       } else {
         res.end(JSON.stringify(resp.result));
       }
     }
 
-    // POST /click?target=xxx
-    else if (pathname === '/click') {
+    // POST /click or /clickAt?target=xxx; body remains a CSS selector.
+    else if (pathname === '/click' || pathname === '/clickAt') {
       if (!requireQueryParam(res, q.target, 'target')) return;
-      const sid = await ensureSession(q.target);
       const selector = await readBody(req);
-      if (!selector) {
-        res.statusCode = 400;
-        res.end(JSON.stringify({ error: 'POST body 需要 CSS 选择器' }));
-        return;
-      }
-      const selectorJson = JSON.stringify(selector);
-      const js = `(() => {
-        const el = document.querySelector(${selectorJson});
-        if (!el) return { error: '未找到元素: ' + ${selectorJson} };
-        el.scrollIntoView({ block: 'center' });
-        el.click();
-        return { clicked: true, tag: el.tagName, text: (el.textContent || '').slice(0, 100) };
-      })()`;
-      const resp = await sendCDPChecked('Runtime.evaluate', {
-        expression: js,
-        returnByValue: true,
-        awaitPromise: true,
-      }, sid);
-      if (resp.result?.result?.value) {
-        const val = resp.result.result.value;
-        res.statusCode = val.error ? 400 : 200;
-        res.end(JSON.stringify(val));
-      } else {
-        res.end(JSON.stringify(resp.result));
-      }
-    }
-
-    // POST /clickAt?target=xxx
-    else if (pathname === '/clickAt') {
-      if (!requireQueryParam(res, q.target, 'target')) return;
       const sid = await ensureSession(q.target);
-      const selector = await readBody(req);
-      if (!selector) {
-        res.statusCode = 400;
-        res.end(JSON.stringify({ error: 'POST body 需要 CSS 选择器' }));
-        return;
+      const selected = await evaluateSelection(sid, selector, pathname === '/click' ? 'click' : 'coordinates');
+      if (selected.error) { json(res, 400, selected); return; }
+      if (pathname === '/clickAt') {
+        await sendCDPChecked('Input.dispatchMouseEvent', {
+          type: 'mousePressed', x: selected.x, y: selected.y, button: 'left', clickCount: 1,
+        }, sid);
+        await sendCDPChecked('Input.dispatchMouseEvent', {
+          type: 'mouseReleased', x: selected.x, y: selected.y, button: 'left', clickCount: 1,
+        }, sid);
       }
-      const selectorJson = JSON.stringify(selector);
-      const js = `(() => {
-        const el = document.querySelector(${selectorJson});
-        if (!el) return { error: '未找到元素: ' + ${selectorJson} };
-        el.scrollIntoView({ block: 'center' });
-        const rect = el.getBoundingClientRect();
-        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, tag: el.tagName, text: (el.textContent || '').slice(0, 100) };
-      })()`;
-      const coordResp = await sendCDPChecked('Runtime.evaluate', {
-        expression: js,
-        returnByValue: true,
-        awaitPromise: true,
-      }, sid);
-      const coord = coordResp.result?.result?.value;
-      if (!coord || coord.error) {
-        res.statusCode = 400;
-        res.end(JSON.stringify(coord || coordResp.result));
-        return;
-      }
-      await sendCDPChecked('Input.dispatchMouseEvent', {
-        type: 'mousePressed', x: coord.x, y: coord.y, button: 'left', clickCount: 1
-      }, sid);
-      await sendCDPChecked('Input.dispatchMouseEvent', {
-        type: 'mouseReleased', x: coord.x, y: coord.y, button: 'left', clickCount: 1
-      }, sid);
-      res.end(JSON.stringify({ clicked: true, x: coord.x, y: coord.y, tag: coord.tag, text: coord.text }));
+      res.end(JSON.stringify({ clicked: true, ...selected }));
     }
 
     // POST /setFiles?target=xxx
@@ -479,29 +607,35 @@ const server = http.createServer(async (req, res) => {
       try {
         body = JSON.parse(await readBody(req));
       } catch {
-        json(res, 400, { error: 'POST body 需要合法 JSON' });
+        json(res, 400, { error: 'POST body 需要合法 JSON', code: 'INVALID_ARGUMENT' });
         return;
       }
-      if (!body.selector || !Array.isArray(body.files) || body.files.length === 0) {
-        json(res, 400, { error: '需要 selector 和非空 files 数组字段' });
+      if (!body || typeof body.selector !== 'string' || !body.selector.trim() || !Array.isArray(body.files) || body.files.length === 0 || body.files.some(file => typeof file !== 'string' || !file.trim())) {
+        json(res, 400, { error: '需要 selector 和非空 files 数组字段', code: 'INVALID_ARGUMENT' });
+        return;
+      }
+      const selected = await evaluateSelection(sid, body.selector, 'inspect');
+      if (selected.error) { json(res, 400, selected); return; }
+      if (selected.tag !== 'INPUT' || selected.type?.toLowerCase() !== 'file') {
+        json(res, 400, { error: '元素必须是 file input', code: 'INVALID_ELEMENT', ...selected });
         return;
       }
       await sendCDPChecked('DOM.enable', {}, sid);
       const doc = await sendCDPChecked('DOM.getDocument', {}, sid);
-      const node = await sendCDPChecked('DOM.querySelector', {
+      const node = await sendCDPChecked('DOM.querySelectorAll', {
         nodeId: doc.result.root.nodeId,
         selector: body.selector
       }, sid);
-      if (!node.result?.nodeId) {
-        res.statusCode = 400;
-        res.end(JSON.stringify({ error: '未找到元素: ' + body.selector }));
+      if (node.result?.nodeIds?.length !== 1) {
+        json(res, 400, { error: '选择器匹配在操作前发生变化', code: 'SELECTOR_CHANGED',
+          selector: body.selector, match_count: node.result?.nodeIds?.length ?? 0 });
         return;
       }
       await sendCDPChecked('DOM.setFileInputFiles', {
-        nodeId: node.result.nodeId,
+        nodeId: node.result.nodeIds[0],
         files: body.files
       }, sid);
-      res.end(JSON.stringify({ success: true, files: body.files.length }));
+      res.end(JSON.stringify({ success: true, files: body.files.length, selector: body.selector, match_count: 1 }));
     }
 
     // GET /scroll?target=xxx&y=3000&direction=down
@@ -560,7 +694,7 @@ const server = http.createServer(async (req, res) => {
     else {
       res.statusCode = 404;
       res.end(JSON.stringify({
-        error: '未知端点',
+        error: '未知端点', code: 'UNKNOWN_ENDPOINT',
         endpoints: {
           '/health': 'GET - 健康检查',
           '/targets': 'GET - 列出所有页面 tab',
@@ -570,6 +704,7 @@ const server = http.createServer(async (req, res) => {
           '/back?target=': 'GET - 后退',
           '/info?target=': 'GET - 页面信息',
           '/eval?target=': 'POST body=JS - 执行 JS',
+          '/wait?target=': 'POST body=JSON - 等待具名页面状态',
           '/click?target=': 'POST body=CSS选择器 - 点击元素',
           '/clickAt?target=': 'POST body=CSS选择器 - 真实鼠标点击',
           '/setFiles?target=': 'POST body=JSON - 文件上传',
@@ -579,7 +714,7 @@ const server = http.createServer(async (req, res) => {
       }));
     }
   } catch (e) {
-    json(res, e.statusCode || 500, { error: e.message });
+    json(res, e.statusCode || 500, errorPayload(e));
   }
 });
 
@@ -613,7 +748,7 @@ async function main() {
   }
 
   server.listen(PORT, '127.0.0.1', () => {
-    console.log(`[CDP Proxy] academic-search 运行在 http://localhost:${PORT}`);
+    console.log(`[CDP Proxy] academic-search 运行在 http://127.0.0.1:${server.address().port}`);
     connect().catch(e => console.error('[CDP Proxy] 初始连接失败:', e.message, '（将在首次请求时重试）'));
   });
 }

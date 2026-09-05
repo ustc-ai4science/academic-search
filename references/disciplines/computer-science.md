@@ -11,7 +11,7 @@ Use for computer science, AI, ML, NLP, CV, systems, software engineering, databa
 | Broad paper search | Semantic Scholar, OpenAlex |
 | Preprints | arXiv |
 | CS venue metadata | ACM DL, IEEE Xplore, DBLP |
-| Code and benchmarks | Papers with Code, official GitHub |
+| Code and benchmarks | Paper/author project pages and official repositories; third-party indexes require validation |
 | Citation counts | Google Scholar, Semantic Scholar |
 | DOI / publisher metadata | Crossref |
 
