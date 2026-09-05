@@ -35,7 +35,7 @@ Academic-Search 的目标是把这些经验转化为可执行的 Skill 指令和
 - PubMed
 - Papers with Code
 
-对于没有可靠公开 API 或反爬较强的平台，例如 Google Scholar、CNKI，项目使用 CDP Proxy 直连用户本机 Chrome，复用用户已有登录态，并在独立后台 tab 中完成访问。
+对于需要浏览器的平台，例如 Google Scholar、CNKI，项目默认自动启动本机 Chrome 的专用持久 profile，并在任务自己的 tab 中完成访问。网站首次登录在专用 profile 中完成，不复制日常 Chrome 登录态；也可通过显式端点连接已运行的浏览器。配置见 [CDP API](references/cdp-api.md)。
 
 核心原则是：能用 API 就不打开浏览器；必须浏览器时才使用 CDP。
 
@@ -175,7 +175,7 @@ academic-search/
 ├── README.en.md                # 英文说明
 ├── wechat-promo.md             # 推广介绍文案
 ├── scripts/
-│   ├── cdp-proxy.mjs           # CDP Proxy，直连用户 Chrome
+│   ├── cdp-proxy.mjs           # CDP Proxy，专用 Chrome / 显式端点
 │   ├── check-deps.sh           # 环境检查
 │   ├── oa-pdf-download.mjs     # 开放 PDF manifest 生成与下载
 │   ├── oa-pdf-download-self-test.sh # 开放 PDF 下载 helper 回归测试
@@ -221,7 +221,7 @@ Academic-Search 最大的不同在于，它不是把搜索引擎包装成命令�
 
 - 它不是通用论文下载器；只支持合法开放 PDF 的 manifest 生成和可选下载，不承诺获取所有 PDF。
 - 它只处理合法开放访问全文，不绕过付费墙。
-- Google Scholar、CNKI 等平台依赖 Chrome 远程调试和用户登录态。
+- Google Scholar、CNKI 等平台使用专用 Chrome 或显式指定的已运行端点；网站登录和访问权限以该 profile 的当前状态为准。
 - Semantic Scholar 高频使用建议配置 API Key，否则容易遇到 429。
 - 学科路由和站点经验仍需要持续补充，尤其是非 CS 学科和商业出版商平台。
 

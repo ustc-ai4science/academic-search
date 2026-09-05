@@ -115,7 +115,7 @@ start_proxy() {
   CDP_PROXY_PORT="${PROXY_PORT}" node "${SCRIPT_DIR}/cdp-proxy.mjs" >"${PROXY_LOG}" 2>&1 &
   PROXY_PID=$!
   local health="" bound_port=""
-  for _ in $(seq 1 40); do
+  for _ in $(seq 1 120); do
     kill -0 "${PROXY_PID}" 2>/dev/null || fail "new proxy process exited; refusing to test an existing instance: $(cat "${PROXY_LOG}")"
     bound_port="$(sed -n 's#.*运行在 http://127.0.0.1:\([0-9]*\).*#\1#p' "${PROXY_LOG}" | head -n 1)"
     if [ -n "${bound_port}" ]; then

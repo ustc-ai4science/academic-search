@@ -2,7 +2,7 @@
 name: academic-search
 description: Use when the user asks to search or review academic papers, retrieve scholarly metadata or citation counts, find an author's publications, export BibTeX, or discover and download open-access full text. 适用于搜论文、文献综述、系统综述、引用分析、DOI/arXiv 精确查找与开放 PDF 获取。
 metadata:
-  version: "1.3.0"
+  version: "1.3.1"
 ---
 
 # Academic Search
@@ -54,6 +54,6 @@ metadata:
 
 ## 运行路径与站点经验
 
-本文及 references 中的脚本路径均相对本 `SKILL.md` 所在目录。先将其绝对路径保存为 `ACADEMIC_SEARCH_ROOT`，再运行 `bash "$ACADEMIC_SEARCH_ROOT/scripts/check-deps.sh"` 或 `node "$ACADEMIC_SEARCH_ROOT/scripts/oa-pdf-download.mjs"`；不要假定安装在某个宿主的固定目录。仅在使用 bundled CDP 运行时时执行前一条命令，协议见 [cdp-api](references/cdp-api.md)。
+本文及 references 中的脚本路径均相对本 `SKILL.md` 所在目录。先将其绝对路径保存为 `ACADEMIC_SEARCH_ROOT`，再运行 `bash "$ACADEMIC_SEARCH_ROOT/scripts/check-deps.sh"` 或 `node "$ACADEMIC_SEARCH_ROOT/scripts/oa-pdf-download.mjs"`；不要假定安装在某个宿主的固定目录。仅在使用 bundled CDP 运行时时执行前一条命令。默认自动启动本机 Chrome，使用独立持久 profile（`~/.local/share/academic-search/chrome-profile`），不发现或连接日常 Chrome；首次网站登录需在专用 profile 中完成，日常登录态不会复制。显式设置 `ACADEMIC_CHROME_ENDPOINT` 时只连接该已运行端点，失败不自动启动或回退；`CDP_PROXY_PORT` 仅指定代理端口，v1.3.1 默认 3457（旧版为 3456）；调用前核对新版代理身份，不接管旧端口服务。配置与协议见 [cdp-api](references/cdp-api.md)。
 
 经验按“域名 → 操作 → 症状”按需读取。条目使用 `unverified` / `verified` / `deprecated` 状态，记录适用环境、前提、失败信号、回退和 `last_verified`。历史未复验条目保持 `last_verified: null`；只有实际观察到预期结果才能升级为 verified。选择器失效时以当前观察修正本次操作。仅在用户授权维护本 Skill 时更新内置经验；普通检索不自动改写 Skill 或全局个人记忆。

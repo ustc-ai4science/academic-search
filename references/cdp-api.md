@@ -2,49 +2,81 @@
 
 ## 基础信息
 
-- 路径：`ACADEMIC_SEARCH_ROOT` 指向本 Skill 的实际安装目录（`SKILL.md` 所在目录）。
-- 地址：`http://127.0.0.1:${CDP_PROXY_PORT:-3456}`
-- 启动：`CDP_PROXY_PORT=3456 node "$ACADEMIC_SEARCH_ROOT/scripts/cdp-proxy.mjs" &`
-- 启动后持续运行，不建议主动停止（重启需 Chrome 重新授权）
-- 停止任务自建的测试代理时，仅停止已记录的 PID；不要批量停止用户代理。
-- 健康检查：`curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/health"`
+- `ACADEMIC_SEARCH_ROOT` 指向本 Skill 的实际安装目录（`SKILL.md` 所在目录）。
+- v1.3.1 的 Proxy 地址默认是 `http://127.0.0.1:3457`，可由 `CDP_PROXY_PORT` 覆盖。旧版默认 3456；升级后同步修改客户端基址，不接管旧端口上的其他服务。
+- 仅在需要此包的浏览器模式时运行 `bash "$ACADEMIC_SEARCH_ROOT/scripts/check-deps.sh"`；API-only 任务不执行浏览器准备。
+- `check-deps` 仅复用能核对为本工具记录的代理 PID、版本和配置的进程。未知端口占用明确失败，不自动采用或停止旧代理。
+- 复用前先在本机核验随机进程标记与监听端口归属；macOS/Linux 需要 `ps` 和 `lsof`，Windows 使用 PowerShell。核验工具缺失或失败时拒绝复用，不通过请求未知 `/health` 来猜测身份。启动记录与日志默认保存在 `~/.local/share/academic-search/proxy-state`，可用 `ACADEMIC_PROXY_STATE_DIR` 指定其他目录。
+- 测试或诊断需直接启动时可运行 `CDP_PROXY_PORT=3457 node "$ACADEMIC_SEARCH_ROOT/scripts/cdp-proxy.mjs"`，并由调用者管理该进程生命周期。
+- 直接启动不产生 `check-deps` 的归属记录，不能随后通过 `check-deps` 自动接纳该实例；常规任务从 `check-deps` 启动。
+- 停止任务自建的测试代理时仅停止已记录的 PID；不要批量停止用户代理。持久 profile 供后续任务复用，不在任务结束时删除。
+
+## 浏览器配置
+
+| 环境变量 | 默认值 / 语义 |
+|---|---|
+| `ACADEMIC_CHROME_PROFILE` | `~/.local/share/academic-search/chrome-profile`；managed 模式的专用持久 profile |
+| `ACADEMIC_CHROME_EXECUTABLE` | 未指定时查找本机 Chrome；可设为实际可执行文件路径 |
+| `ACADEMIC_CHROME_ENDPOINT` | 未设置时为 managed 模式；设置后仅连接指定已运行的 HTTP CDP 端点 |
+| `ACADEMIC_CHROME_START_TIMEOUT_MS` | 15000；准备专用浏览器的等待上限 |
+| `ACADEMIC_CDP_CONNECT_TIMEOUT_MS` | 5000；CDP 连接等待上限 |
+| `CDP_PROXY_PORT` | 3457；本代理 HTTP 监听端口，与 Chrome 调试端口不同 |
+
+managed 模式使用本机 Chrome，以专用 `--user-data-dir`、`--remote-debugging-port=0`、`--remote-debugging-address=127.0.0.1` 启动。只读取指定专用 profile 的 `DevToolsActivePort` 获取动态端口，不扫描日常 Chrome profile 或常用端口。`ACADEMIC_CHROME_PROFILE` 应指向专用目录，不要配置为日常浏览器的数据目录。首次网站登录在此 profile 中完成；它不复制日常浏览器的登录态，网站也可能要求重新登录或验证码。
+
+endpoint 模式只连接明确给出的已运行端点，启动失败或连接失败时不自动启动浏览器、不切换 profile、不扫描其他端口。例如 WebUse 确实已运行于下列端点时：
+
+```bash
+ACADEMIC_CHROME_ENDPOINT=http://127.0.0.1:9334 \
+  bash "$ACADEMIC_SEARCH_ROOT/scripts/check-deps.sh"
+```
+
+此命令不启动 WebUse；示例不表示该端点在当前机器运行。配置指纹或版本与现有代理不符时，应报告差异并使用独立代理端口，不把其他工具的代理当作本实例。
+
+配置检查可以直接调用 `node "$ACADEMIC_SEARCH_ROOT/scripts/browser-runtime.mjs" config`：只输出配置，不访问网络、不启动浏览器。`ensure` 子命令会有界准备 managed 浏览器或检查显式 endpoint，并输出准备结果 JSON。
 
 ## API 端点
 
 ### GET /health
-健康检查，返回 `status`、`connected`、`sessions`、`chromePort`，以及当前代理的 `pid`、`instance_id`、实际监听 `port`。`status:"ok"` 表示 HTTP 服务存活，浏览器可用还需 `connected:true`。测试必须核对新启动进程的 PID，不能仅凭旧代理的健康响应判定通过。
+只读状态检查，不触发发现、启动或连接浏览器。返回 `status`、`connected`、`sessions`、`chromePort`、`pid`、`instance_id`、实际监听 `port`，新增 `version:"1.3.1"` 与 `browser` 配置：
+
+```json
+{"mode":"managed","endpoint":null,"profile_dir":"/absolute/path/to/academic-search/chrome-profile"}
+```
+
+`browser.mode` 为 `managed` 或 `endpoint`。managed 准备完成前 `endpoint` 为 null，之后为动态 HTTP 调试地址；endpoint 模式显示配置的 HTTP 地址且 `profile_dir` 为 null。`status:"ok"` 表示 HTTP 服务存活，浏览器可用还需 `connected:true`。首次后台连接未完成时可能为 false；重复读取 health 本身不会启动或重连。测试必须核对新启动进程的 PID、实例标识和版本，不能仅凭旧代理响应判定通过。
 ```bash
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/health"
+curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/health"
 ```
 
 ### GET /targets
 列出所有已打开的页面 tab。返回数组，每项含 `targetId`、`title`、`url`。
 ```bash
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/targets"
+curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/targets"
 ```
 
 ### GET /new?url=URL
 创建空白后台 tab，attach 后再导航到请求 URL，返回 `{ targetId, load_status }`。`load_status` 为 `complete`、`timeout` 或 `error`；错误时保留已创建的 `targetId` 以便检查和清理。
 ```bash
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/new?url=https://example.com"
+curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/new?url=https://example.com"
 ```
 
 ### GET /close?target=ID
 关闭指定 tab。
 ```bash
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/close?target=TARGET_ID"
+curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/close?target=TARGET_ID"
 ```
 
 ### GET /navigate?target=ID&url=URL
 在已有 tab 中导航到新 URL。保留 CDP 的 `frameId`、`loaderId` 等字段，增加 `load_status`；导航返回 `errorText` 时返回 HTTP 502、`code:"NAVIGATION_FAILED"` 和 `load_status:"error"`。
 ```bash
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/navigate?target=ID&url=https://example.com"
+curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/navigate?target=ID&url=https://example.com"
 ```
 
 ### GET /back?target=ID
 后退一页，返回 `{ ok:true, navigated:true, load_status }`。先观察主文档导航事件，再检查新文档加载，防止旧页面的 `complete` 状态被误判为后退完成。没有上一条历史时返回 `navigated:false`、`load_status:"complete"`。
 ```bash
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/back?target=ID"
+curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/back?target=ID"
 ```
 
 三个导航端点均接受可选查询参数 `timeout_ms`（整数 1–60000，默认 15000），用于限制文档加载检查。`complete` 仅表示 `document.readyState === "complete"`，不表示异步搜索结果已就绪。`timeout` 不取消导航，之后可通过 `/info` 或 `/wait` 检查。该时限从加载检查开始计算，连接、attach 和导航 CDP 命令仍使用各自的命令时限。
@@ -54,7 +86,7 @@ curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/back?target=ID"
 只读轮询显式 CSS 条件，识别当前页面状态；不会点击、滚动或修改 DOM。POST body 为 JSON：
 
 ```bash
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/wait?target=ID" \
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/wait?target=ID" \
   -H 'Content-Type: application/json' \
   -d '{"conditions":[{"state":"blocked","selector":".challenge","visible":true},{"state":"empty","selector":".empty-results","visible":true},{"state":"results_ready","selector":".results","visible":true}],"timeout_ms":15000,"poll_ms":250}'
 ```
@@ -82,31 +114,31 @@ curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/wait?target=ID" \
 ### GET /info?target=ID
 获取页面基础信息（title、url、readyState）。
 ```bash
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/info?target=ID"
+curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/info?target=ID"
 ```
 
 ### POST /eval?target=ID
 执行 JavaScript 表达式，POST body 为 JS 代码。
 ```bash
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/eval?target=ID" -d 'document.title'
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/eval?target=ID" -d 'document.title'
 ```
 
 ### POST /click?target=ID
 JS 层面点击（`el.click()`），POST body 为 CSS 选择器。默认要求恰好一个匹配元素，随后 scrollIntoView 并点击；多个匹配时不执行任何点击或滚动。
 ```bash
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/click?target=ID" -d 'button.submit'
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/click?target=ID" -d 'button.submit'
 ```
 
 ### POST /clickAt?target=ID
 CDP 浏览器级真实鼠标点击（`Input.dispatchMouseEvent`），POST body 为 CSS 选择器。要求选择器恰好匹配一个元素，再获取非零布局区域的中心坐标并模拟鼠标按下/释放。返回坐标不保证元素未被遮挡，应先观察页面证据。
 ```bash
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/clickAt?target=ID" -d 'button.upload'
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/clickAt?target=ID" -d 'button.upload'
 ```
 
 ### POST /setFiles?target=ID
 给唯一匹配的 file input 设置本地文件路径（`DOM.setFileInputFiles`），无需系统文件对话框。支持隐藏 file input。POST body 为 JSON；files 必须是非空路径字符串数组。选择器无匹配、多个匹配或不是 file input 均返回错误。
 ```bash
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/setFiles?target=ID" \
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/setFiles?target=ID" \
   -d '{"selector":"input[type=file]","files":["/path/to/file.pdf"]}'
 ```
 
@@ -121,14 +153,14 @@ curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/setFiles?target=ID" \
 ### GET /scroll?target=ID&y=3000&direction=down
 滚动页面。`direction` 可选 `down`（默认）、`up`、`top`、`bottom`。滚动后自动等待 800ms 供懒加载触发。
 ```bash
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/scroll?target=ID&y=3000"
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/scroll?target=ID&direction=bottom"
+curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/scroll?target=ID&y=3000"
+curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/scroll?target=ID&direction=bottom"
 ```
 
 ### GET /screenshot?target=ID&file=/tmp/shot.png
 截图。指定 `file` 参数保存到本地文件；不指定则返回图片二进制。可选 `format=jpeg`。
 ```bash
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/screenshot?target=ID&file=/tmp/shot.png"
+curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/screenshot?target=ID&file=/tmp/shot.png"
 ```
 
 ---
@@ -173,11 +205,12 @@ document.readyState
 
 | 错误信息 | 原因 | 解决方法 |
 |---------|------|---------|
-| `Chrome 未开启远程调试端口` | Chrome 未开启远程调试 | 打开 `chrome://inspect/#remote-debugging`，勾选 Allow remote debugging |
+| 浏览器准备失败 | 未找到可执行文件、专用 profile 不可用或启动超时 | 核对 Chrome 路径、专用 profile 和超时诊断；不要改连日常 Chrome |
+| 显式 endpoint 不可达 | 指定浏览器未运行或地址不正确 | 启动/核对该独立浏览器；本代理不会启动它或回退至其他实例 |
 | `attach 失败` | targetId 无效或 tab 已关闭 | 用 `/targets` 获取最新列表 |
 | `CDP 命令超时` | 页面长时间未响应 | 重试或用 `/info` 检查 tab 状态 |
-| `端口已被占用` | 另一个 proxy 实例在运行 | 已有实例可直接复用，用 `/health` 确认 |
-| `WebSocket 未连接` | Proxy 启动后 Chrome 断连 | 重新运行 `check-deps.sh` 重连 |
+| `端口已被占用` | 指定代理端口已有服务 | 核对记录的进程身份；不属于本工具时选择其他 `CDP_PROXY_PORT`，不接管或停止该服务 |
+| `WebSocket 未连接` | Proxy 与所选浏览器连接断开 | 核对当前 browser 配置与错误；只对该专用 profile 或显式 endpoint 做有界重连 |
 
 ---
 

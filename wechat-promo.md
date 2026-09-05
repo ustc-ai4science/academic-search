@@ -59,8 +59,8 @@ Academic-Search 不是一个单纯的“搜索脚本”，而是一个专门为�
 其中：
 
 - 对 arXiv、Semantic Scholar、PubMed、Papers with Code 这类开放平台，优先走 API
-- 对 Google Scholar 这类没有稳定公开 API、且反爬严格的平台，使用 CDP 直连用户本机 Chrome
-- 对 CNKI 这类中文文献平台，使用 CDP 直连用户本机 Chrome，复用机构登录态
+- 对 Google Scholar、CNKI 等需要浏览器的平台，默认自动启动本机 Chrome 的专用持久 profile，也可通过显式端点连接已运行浏览器
+- 网站首次登录在专用 profile 中完成，日常 Chrome 登录态不会复制；机构权限仍需按当前页面核对
 - 对 ACM、IEEE 这类介于两者之间的平台，根据场景选择 WebFetch、Jina、页面抓取或 CDP 兜底
 
 核心原则很简单：

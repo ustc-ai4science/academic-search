@@ -10,10 +10,12 @@ import { randomUUID } from 'node:crypto';
 
 // Execute the real HTTP router and CDP request code with an in-memory CDP transport.
 // Only browser discovery is substituted: these tests never connect to real Chrome.
-async function fixture(t) {
+async function fixture(t, { connectAtStart = true, socketBehavior = 'open' } = {}) {
   const source = fs.readFileSync(new URL('./cdp-proxy.mjs', import.meta.url), 'utf8')
     .replace(/^#!.*\n/, '').replace(/^import .*;$/gm, '').replace(/^main\(\);$/m, '');
   const commands = [];
+  const socketURLs = [];
+  let prepareCalls = 0;
   let clicked = 0;
   let scrolled = 0;
   let filesSet = 0;
@@ -50,7 +52,13 @@ async function fixture(t) {
   class FakeWebSocket extends EventTarget {
     static OPEN = 1;
     readyState = 1;
-    constructor() { super(); queueMicrotask(() => this.dispatchEvent(new Event('open'))); }
+    constructor(url) {
+      super(); socketURLs.push(url);
+      if (socketBehavior === 'open') queueMicrotask(() => this.dispatchEvent(new Event('open')));
+      else if (socketBehavior === 'close') queueMicrotask(() => { this.readyState = 3; this.dispatchEvent(new Event('close')); });
+      else this.readyState = 0;
+    }
+    close() { this.readyState = 3; queueMicrotask(() => this.dispatchEvent(new Event('close'))); }
     send(serialized) {
       const msg = JSON.parse(serialized);
       commands.push(msg);
@@ -86,17 +94,18 @@ async function fixture(t) {
     }
   }
   const context = vm.createContext({ http, URL, fs, path, os, net, randomUUID, WebSocket: FakeWebSocket,
+    browserConfigFromEnv: () => ({mode:'endpoint',endpoint:'http://127.0.0.1:9334',profile_dir:null,start_timeout_ms:80,connect_timeout_ms:40}),
+    ensureBrowser: async () => { prepareCalls++; return {mode:'endpoint',endpoint:'http://127.0.0.1:9334',profile_dir:null,webSocketDebuggerUrl:'ws://127.0.0.1:9334/devtools/browser/fake'}; },
     console: { log() {}, error() {} }, process: { env: { CDP_PROXY_PORT: '0' }, pid: process.pid, on() {} },
     setTimeout, setInterval, clearTimeout, clearInterval, Buffer, performance });
   const server = await vm.runInContext(`(async () => { ${source}\n
-    discoverChromePort = async () => ({port: 9222, wsPath: '/fake'});
-    await connect();
+    if (${connectAtStart}) await connect();
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     return server;
   })()`, context);
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const base = `http://127.0.0.1:${server.address().port}`;
-  return { commands, selectors, element, set ready(value) { ready = value; },
+  return { commands, selectors, element, socketURLs, prepareCalls: () => prepareCalls, set ready(value) { ready = value; },
     set droppedEvaluate(value) { droppedEvaluate = value; }, set closeDuringEvaluate(value) { closeDuringEvaluate = value; }, set navigationError(value) { navigationError = value; },
     set noHistory(value) { noHistory = value; }, set backDelay(value) { backDelay = value; },
     mutations: () => ({ clicked, scrolled, filesSet }),
@@ -266,4 +275,26 @@ test('wait reports a closed WebSocket as disconnection, not a business-state tim
   assert.equal(result.status, 503);
   assert.equal(result.body.code, 'CDP_DISCONNECTED');
   assert.equal(result.body.state, undefined, 'transport failure is not a page-state outcome');
+});
+
+test('health is read-only when the browser has never connected', async t => {
+  const f = await fixture(t, {connectAtStart:false});
+  const health = (await f.request('/health')).body;
+  assert.equal(health.connected, false);
+  assert.equal(f.socketURLs.length, 0, 'health must not open a browser WebSocket');
+  assert.equal(f.prepareCalls(), 0, 'health must not start or inspect a browser');
+  assert.equal(health.version, '1.3.1');
+  assert.deepEqual(health.browser, {mode:'endpoint',endpoint:'http://127.0.0.1:9334',profile_dir:null});
+});
+test('browser handshake has a bounded deadline', {timeout:500}, async t => {
+  const f = await fixture(t, {connectAtStart:false,socketBehavior:'never'});
+  const response = await f.request('/targets');
+  assert.equal(response.status, 503);
+  assert.equal(response.body.code, 'CDP_CONNECT_TIMEOUT');
+});
+test('browser close before handshake rejects instead of hanging readiness', {timeout:500}, async t => {
+  const f = await fixture(t, {connectAtStart:false,socketBehavior:'close'});
+  const response = await f.request('/targets');
+  assert.equal(response.status, 503);
+  assert.equal(response.body.code, 'CDP_DISCONNECTED');
 });

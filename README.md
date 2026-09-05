@@ -6,7 +6,7 @@
 <p align="center">面向 Codex、Claude Code 等 Skill 宿主的学术检索与元数据提取。</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.3.0-0f766e" />
+  <img src="https://img.shields.io/badge/version-v1.3.1-0f766e" />
   <img src="https://img.shields.io/badge/license-MIT-1f2937" />
   <img src="https://img.shields.io/github/stars/ustc-ai4science/academic-search?style=social" />
 </p>
@@ -19,7 +19,9 @@
 
 ## News
 
-[v1.3 release notes](docs/release-1.3.md)
+[v1.3.1 浏览器隔离说明](docs/release-1.3.1.md) · [v1.3 更新说明](docs/release-1.3.md)
+
+- `2026-09-05` `v1.3.1`：默认自动启动专用 Chrome profile，动态分配调试端口；显式端点仅连接，代理复用核对进程身份
 
 - `2026-09-05` 发布 `v1.3.0`：浏览器条件等待与唯一目标检查、PDF 格式核验与来源记录、按需工作流和经验失效管理
 
@@ -77,7 +79,7 @@ bash scripts/check-deps.sh
 
 **可靠性与扩展**
 - 失败信号处理：429 / 超时 / 空结果各有对应调整策略，不在同一条路上盲目重试
-- CDP 浏览器模式：连接已配置的 Chrome，运行时确认登录状态；已有宿主浏览器工具可直接复用
+- CDP 浏览器模式：默认启动独立持久 Chrome profile；通过显式端点可连接已运行浏览器，API-only 不启动
 - 并行分治：独立目标可并行，使用各自 target；同平台共享速率预算，桌面焦点操作串行
 - 站点经验预置：按域名和操作读取经验；历史条目保留验证状态和失效回退，更新遵循宿主授权
 
@@ -139,10 +141,28 @@ git clone https://github.com/ustc-ai4science/academic-search ~/.claude/skills/ac
 ln -sfn "$(pwd)" ~/.claude/skills/academic-search
 ```
 
-**前置要求**：脚本使用 Node.js 22+；API 认证和配额以平台当前文档及账号为准。已有宿主浏览器能力可直接使用；仅使用附带 CDP Proxy 时需要 Chrome 调试连接：
+**前置要求**：脚本使用 Node.js 22+；浏览器模式使用本机已安装的 Chrome。API 认证和配额以平台当前文档及账号为准；只调用 API 不需要启动浏览器。
 
-1. 打开 `chrome://inspect/#remote-debugging`
-2. 勾选 **Allow remote debugging for this browser instance**
+### 专用 Chrome
+
+**默认值迁移：v1.3.1 将 Proxy 端口从 3456 改为 3457。** 更新自定义调用脚本中的基址；不要把旧端口上运行的其他工具当作新版代理，也无需为此停止旧代理。
+
+在实际 Skill 目录运行 `bash scripts/check-deps.sh`，运行时会自动准备独立持久 profile：`~/.local/share/academic-search/chrome-profile`。Chrome 调试端口由系统动态分配，仅绑定本机；不会扫描或连接日常 Chrome。首次访问需要登录的网站时，在此专用窗口中登录，日常浏览器的登录态不会复制。
+
+| 配置 | 用途 |
+|---|---|
+| `ACADEMIC_CHROME_PROFILE` | 覆盖专用 profile 目录 |
+| `ACADEMIC_CHROME_EXECUTABLE` | 指定本机 Chrome 可执行文件 |
+| `ACADEMIC_CHROME_ENDPOINT` | 仅连接指定的已运行浏览器端点；设置后不自动启动或回退 |
+| `CDP_PROXY_PORT` | Proxy 的 HTTP 端口，默认 3457；不是 Chrome 调试端口 |
+
+例如，仅在 WebUse 已运行于该端点时复用：
+
+```bash
+ACADEMIC_CHROME_ENDPOINT=http://127.0.0.1:9334 bash scripts/check-deps.sh
+```
+
+端点不存在会明确失败；此命令不会启动 WebUse。首次网站登录、验证码及网站会话失效仍按实际页面处理。`check-deps` 仅复用可核对为本工具记录的代理进程；未知端口占用会报错，不接管或终止其他代理。配置与诊断详见 [CDP API](references/cdp-api.md)。
 
 ---
 
@@ -162,8 +182,8 @@ ln -sfn "$(pwd)" ~/.claude/skills/academic-search
 | ACM DL | WebFetch + Jina |
 | IEEE Xplore | WebFetch / Jina / 官方 API |
 | ScienceDirect / Wiley / Springer / ACS | 开放获取判定 + 机构访问提示 |
-| **Google Scholar** | **CDP 浏览器（需 Chrome 调试）** |
-| **CNKI（知网）** | **CDP 浏览器（需 Chrome 调试）** |
+| **Google Scholar** | **CDP 浏览器（自动准备专用 Chrome）** |
+| **CNKI（知网）** | **CDP 浏览器（自动准备专用 Chrome）** |
 
 全文获取只针对合法开放访问来源。商业出版商页面可访问不代表 PDF 可下载；遇到需要机构权限、Cloudflare、验证码或 PDF 路由返回 HTML 时，Skill 会报告状态而不是继续尝试绕过限制。
 
@@ -231,14 +251,14 @@ node scripts/oa-pdf-download.mjs \
 
 ## CDP Proxy API
 
-Proxy 通过 WebSocket 直连 Chrome，提供 HTTP API（Agent 自动管理生命周期）：
+Proxy 通过 WebSocket 连接专用 Chrome，或显式指定的已运行浏览器端点，提供 HTTP API。`/health` 是只读状态检查，返回版本与浏览器配置，不触发连接；首次后台连接完成前可能显示 `connected:false`。
 
 ```bash
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/new?url=URL"                              # 新建 tab
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/eval?target=ID" -d 'JS 表达式'    # 执行 JS
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/click?target=ID" -d 'CSS 选择器'  # 点击元素
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/screenshot?target=ID&file=/tmp/shot.png"  # 截图
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/close?target=ID"                          # 关闭 tab
+curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/new?url=URL"                              # 新建 tab
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/eval?target=ID" -d 'JS 表达式'    # 执行 JS
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/click?target=ID" -d 'CSS 选择器'  # 点击元素
+curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/screenshot?target=ID&file=/tmp/shot.png"  # 截图
+curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/close?target=ID"                          # 关闭 tab
 ```
 
 新增 `POST /wait` 按命名条件等待结果/空结果/阻塞状态；`click`、`clickAt`、`setFiles` 默认要求选择器唯一匹配。导航返回 `load_status`，加载完成仍需核验业务结果。
@@ -254,7 +274,7 @@ academic-search/
 ├── Makefile                    # 标准测试入口（make test / make test-release）
 ├── SKILL.md                    # 主指令文件（搜索哲学、平台矩阵、核心能力）
 ├── scripts/
-│   ├── cdp-proxy.mjs           # CDP Proxy（直连用户 Chrome）
+│   ├── cdp-proxy.mjs           # CDP Proxy（专用 Chrome / 显式端点）
 │   ├── check-deps.sh           # 环境检查 + 自动启动 Proxy
 │   ├── oa-pdf-download.mjs     # OA PDF manifest 生成与开放 PDF 下载
 │   ├── oa-pdf-download-self-test.sh # OA PDF 下载 helper 回归测试
@@ -276,7 +296,7 @@ academic-search/
     └── multidisciplinary-improvement-analysis.md  # 多学科能力完善建议
 ```
 
-测试：`make test-offline` 无需 Chrome、只使用本地 fixtures；`make test` / `make test-release` 包含真实 Chrome 回归测试。测试创建独立代理和自己的标签页。
+测试：`make test-offline` 无需 Chrome、只使用本地 fixtures；`make test` / `make test-release` 包含真实 Chrome 回归测试，需要本机 Chrome 或显式可用端点。测试创建独立代理和自己的标签页，不依赖日常 Chrome 的远程调试开关。
 
 ---
 

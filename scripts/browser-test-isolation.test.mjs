@@ -29,6 +29,5 @@ test('shell smoke refuses an older healthy proxy and never operates its targets'
   });
   assert.equal(exitCode, 1, output);
   assert.match(output, /refusing to test an existing instance/);
-  assert.ok(paths.length > 0, 'proxy startup must inspect the occupied port');
-  assert.ok(paths.every(url => url === '/health'), JSON.stringify(paths));
+  assert.equal(paths.length, 0, 'occupied proxy must never be probed, even through /health');
 });

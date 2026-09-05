@@ -1,18 +1,19 @@
 #!/usr/bin/env node
 // CDP Proxy for academic-search skill
-// 通过 HTTP API 操控用户日常 Chrome，用于访问需要浏览器自动化的学术平台
-// 要求：Chrome 已开启远程调试（chrome://inspect/#remote-debugging）
+// 通过 HTTP API 操控专用持久 Chrome profile 或显式配置的浏览器 endpoint
+// 不发现日常 Chrome，不扫描调试端口，不读取日常 profile
 // Node.js 22+（使用原生 WebSocket）
 
 import http from 'node:http';
 import { URL } from 'node:url';
 import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import net from 'node:net';
 import { randomUUID } from 'node:crypto';
+import { browserConfigFromEnv, ensureBrowser } from './browser-runtime.mjs';
 
-const PORT = parseInt(process.env.CDP_PROXY_PORT || '3456');
+const PORT = parseInt(process.env.CDP_PROXY_PORT || '3457');
+const BROWSER_CONFIG = browserConfigFromEnv();
+let browser = { mode: BROWSER_CONFIG.mode, endpoint: BROWSER_CONFIG.endpoint, profile_dir: BROWSER_CONFIG.profile_dir };
 const INSTANCE_ID = randomUUID();
 let ws = null;
 let cmdId = 0;
@@ -37,199 +38,92 @@ if (typeof globalThis.WebSocket !== 'undefined') {
   }
 }
 
-// --- 自动发现 Chrome 调试端口 ---
-async function discoverChromePort() {
-  // 1. 优先读取 DevToolsActivePort 文件（Chrome 运行时写入）
-  const possiblePaths = [];
-  const platform = os.platform();
-
-  if (platform === 'darwin') {
-    const home = os.homedir();
-    possiblePaths.push(
-      path.join(home, 'Library/Application Support/Google/Chrome/DevToolsActivePort'),
-      path.join(home, 'Library/Application Support/Google/Chrome Canary/DevToolsActivePort'),
-      path.join(home, 'Library/Application Support/Chromium/DevToolsActivePort'),
-    );
-  } else if (platform === 'linux') {
-    const home = os.homedir();
-    possiblePaths.push(
-      path.join(home, '.config/google-chrome/DevToolsActivePort'),
-      path.join(home, '.config/chromium/DevToolsActivePort'),
-    );
-  } else if (platform === 'win32') {
-    const localAppData = process.env.LOCALAPPDATA || '';
-    possiblePaths.push(
-      path.join(localAppData, 'Google/Chrome/User Data/DevToolsActivePort'),
-      path.join(localAppData, 'Chromium/User Data/DevToolsActivePort'),
-    );
-  }
-
-  for (const p of possiblePaths) {
-    try {
-      const content = fs.readFileSync(p, 'utf-8').trim();
-      const lines = content.split('\n');
-      const port = parseInt(lines[0]);
-      if (port > 0 && port < 65536) {
-        const ok = await checkPort(port);
-        if (ok) {
-          const wsPath = lines[1] || null;
-          console.log(`[CDP Proxy] 从 DevToolsActivePort 发现端口: ${port}${wsPath ? ' (带 wsPath)' : ''}`);
-          return { port, wsPath };
-        }
-      }
-    } catch { /* 文件不存在，继续 */ }
-  }
-
-  // 2. 扫描常用端口，并通过 /json/version 获取真实 WebSocket 路径
-  const commonPorts = [9222, 9229, 9333];
-  for (const port of commonPorts) {
-    const ok = await checkPort(port);
-    if (ok) {
-      const wsPath = await fetchWsPath(port);
-      console.log(`[CDP Proxy] 扫描发现 Chrome 调试端口: ${port}${wsPath ? ' (带 wsPath)' : ''}`);
-      return { port, wsPath };
-    }
-  }
-
-  return null;
-}
-
-// 从 /json/version 获取 Chrome 的真实 WebSocket debugger URL 路径（含 UUID）
-async function fetchWsPath(port) {
-  return new Promise((resolve) => {
-    const req = http.get(`http://127.0.0.1:${port}/json/version`, { timeout: 2000 }, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          const url = json.webSocketDebuggerUrl; // e.g. ws://127.0.0.1:PORT/devtools/browser/UUID
-          if (url) {
-            const parsed = new URL(url);
-            resolve(parsed.pathname); // 仅返回路径部分
-          } else {
-            resolve(null);
-          }
-        } catch {
-          resolve(null);
-        }
-      });
-    });
-    req.on('error', () => resolve(null));
-    req.on('timeout', () => { req.destroy(); resolve(null); });
-  });
-}
-
-// TCP 探测端口（避免 WebSocket 探测触发 Chrome 安全弹窗）
-function checkPort(port) {
-  return new Promise((resolve) => {
-    const socket = net.createConnection(port, '127.0.0.1');
-    const timer = setTimeout(() => { socket.destroy(); resolve(false); }, 2000);
-    socket.once('connect', () => { clearTimeout(timer); socket.destroy(); resolve(true); });
-    socket.once('error', () => { clearTimeout(timer); resolve(false); });
-  });
-}
-
-function getWebSocketUrl(port, wsPath) {
-  if (wsPath) return `ws://127.0.0.1:${port}${wsPath}`;
-  return `ws://127.0.0.1:${port}/devtools/browser`;
-}
-
-// --- WebSocket 连接管理 ---
+// --- Explicit/managed browser connection ---
 let chromePort = null;
-let chromeWsPath = null;
 let connectingPromise = null;
 
 async function connect() {
   if (ws && (ws.readyState === WS.OPEN || ws.readyState === 1)) return;
   if (connectingPromise) return connectingPromise;
-
-  if (!chromePort) {
-    const discovered = await discoverChromePort();
-    if (!discovered) {
-      throw new Error(
-        'Chrome 未开启远程调试端口。\n' +
-        '请在 Chrome 地址栏打开 chrome://inspect/#remote-debugging\n' +
-        '勾选 "Allow remote debugging for this browser instance" 后重试。'
-      );
-    }
-    chromePort = discovered.port;
-    chromeWsPath = discovered.wsPath;
-  }
-
-  const wsUrl = getWebSocketUrl(chromePort, chromeWsPath);
-
-  return connectingPromise = new Promise((resolve, reject) => {
-    ws = new WS(wsUrl);
-
-    const onOpen = () => {
-      cleanup();
-      connectingPromise = null;
-      console.log(`[CDP Proxy] 已连接 Chrome (端口 ${chromePort})`);
-      resolve();
-    };
-    const onError = (e) => {
-      cleanup();
-      connectingPromise = null;
-      const msg = e.message || e.error?.message || '连接失败';
-      console.error('[CDP Proxy] 连接错误:', msg);
-      reject(new Error(msg));
-    };
-    const onClose = () => {
-      console.log('[CDP Proxy] 连接断开');
-      const error = apiError('WebSocket 连接已断开', 'CDP_DISCONNECTED', 503);
-      for (const command of pending.values()) {
-        clearTimeout(command.timer);
-        command.reject(error);
-      }
-      pending.clear();
-      ws = null;
-      chromePort = null;
-      chromeWsPath = null;
-      sessions.clear();
-      navigationVersions.clear();
-      mainFrames.clear();
-    };
-    const onMessage = (evt) => {
-      const data = typeof evt === 'string' ? evt : (evt.data || evt);
-      const msg = JSON.parse(typeof data === 'string' ? data : data.toString());
-
-      if (msg.method === 'Target.attachedToTarget') {
-        const { sessionId, targetInfo } = msg.params;
-        sessions.set(targetInfo.targetId, sessionId);
-      }
-      if (msg.method === 'Page.frameNavigated' && !msg.params.frame.parentId) {
-        mainFrames.set(msg.sessionId, msg.params.frame.id);
-        navigationVersions.set(msg.sessionId, (navigationVersions.get(msg.sessionId) || 0) + 1);
-      }
-      if (msg.method === 'Page.navigatedWithinDocument' && msg.params.frameId === mainFrames.get(msg.sessionId)) {
-        navigationVersions.set(msg.sessionId, (navigationVersions.get(msg.sessionId) || 0) + 1);
-      }
-      if (msg.id && pending.has(msg.id)) {
-        const { resolve, timer } = pending.get(msg.id);
+  const attempt = (async () => {
+    const resolved = await ensureBrowser(BROWSER_CONFIG);
+    browser = { mode: resolved.mode, endpoint: resolved.endpoint, profile_dir: resolved.profile_dir };
+    chromePort = Number(new URL(resolved.endpoint).port || (resolved.endpoint.startsWith('https:') ? 443 : 80));
+    const socket = new WS(resolved.webSocketDebuggerUrl);
+    ws = socket;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = error => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
-        pending.delete(msg.id);
-        resolve(msg);
+        socket.removeEventListener?.('open', onOpen);
+        if (error) reject(error); else resolve();
+      };
+      const onOpen = () => {
+        console.log(`[CDP Proxy] 已连接专用/显式 Chrome (${resolved.endpoint})`);
+        finish();
+      };
+      const onError = event => {
+        finish(apiError(event.message || event.error?.message || 'WebSocket 连接失败', 'CDP_CONNECTION_FAILED', 503));
+        socket.close();
+      };
+      const onClose = () => {
+        finish(apiError('WebSocket 连接已断开', 'CDP_DISCONNECTED', 503));
+        // A delayed close from an older socket must not tear down a new connection.
+        if (ws !== socket) return;
+        for (const command of pending.values()) {
+          clearTimeout(command.timer);
+          command.reject(apiError('WebSocket 连接已断开', 'CDP_DISCONNECTED', 503));
+        }
+        pending.clear();
+        ws = null;
+        chromePort = null;
+        sessions.clear();
+        navigationVersions.clear();
+        mainFrames.clear();
+      };
+      const onMessage = event => {
+        if (ws !== socket) return;
+        const data = typeof event === 'string' ? event : (event.data || event);
+        const msg = JSON.parse(typeof data === 'string' ? data : data.toString());
+        if (msg.method === 'Target.attachedToTarget') {
+          sessions.set(msg.params.targetInfo.targetId, msg.params.sessionId);
+        }
+        if (msg.method === 'Page.frameNavigated' && !msg.params.frame.parentId) {
+          mainFrames.set(msg.sessionId, msg.params.frame.id);
+          navigationVersions.set(msg.sessionId, (navigationVersions.get(msg.sessionId) || 0) + 1);
+        }
+        if (msg.method === 'Page.navigatedWithinDocument' && msg.params.frameId === mainFrames.get(msg.sessionId)) {
+          navigationVersions.set(msg.sessionId, (navigationVersions.get(msg.sessionId) || 0) + 1);
+        }
+        if (msg.id && pending.has(msg.id)) {
+          const { resolve, timer } = pending.get(msg.id);
+          clearTimeout(timer);
+          pending.delete(msg.id);
+          resolve(msg);
+        }
+      };
+      const timer = setTimeout(() => {
+        finish(apiError('WebSocket 握手超时', 'CDP_CONNECT_TIMEOUT', 503));
+        socket.close();
+      }, BROWSER_CONFIG.connect_timeout_ms);
+      if (socket.on) {
+        socket.on('open', onOpen);
+        socket.on('error', onError);
+        socket.on('close', onClose);
+        socket.on('message', onMessage);
+      } else {
+        socket.addEventListener('open', onOpen);
+        socket.addEventListener('error', onError);
+        socket.addEventListener('close', onClose);
+        socket.addEventListener('message', onMessage);
       }
-    };
-
-    function cleanup() {
-      ws.removeEventListener?.('open', onOpen);
-      ws.removeEventListener?.('error', onError);
-    }
-
-    if (ws.on) {
-      ws.on('open', onOpen);
-      ws.on('error', onError);
-      ws.on('close', onClose);
-      ws.on('message', onMessage);
-    } else {
-      ws.addEventListener('open', onOpen);
-      ws.addEventListener('error', onError);
-      ws.addEventListener('close', onClose);
-      ws.addEventListener('message', onMessage);
-    }
-  });
+    });
+  })();
+  connectingPromise = attempt;
+  try { return await attempt; }
+  finally { if (connectingPromise === attempt) connectingPromise = null; }
 }
 
 function sendCDP(method, params = {}, sessionId = null, timeoutMs = 30000) {
@@ -455,13 +349,9 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (pathname === '/health') {
-      let connected = ws && (ws.readyState === WS.OPEN || ws.readyState === 1);
-      if (!connected) {
-        await connect().catch(() => {});
-        connected = ws && (ws.readyState === WS.OPEN || ws.readyState === 1);
-      }
-      res.end(JSON.stringify({ status: 'ok', connected: Boolean(connected), sessions: sessions.size, chromePort,
-        pid: process.pid, instance_id: INSTANCE_ID, port: server.address()?.port }));
+      const connected = Boolean(ws && (ws.readyState === WS.OPEN || ws.readyState === 1));
+      res.end(JSON.stringify({ status: 'ok', version: '1.3.1', connected, sessions: sessions.size, chromePort,
+        pid: process.pid, instance_id: INSTANCE_ID, port: server.address()?.port, browser }));
       return;
     }
 
@@ -730,19 +620,6 @@ function checkPortAvailable(port) {
 async function main() {
   const available = await checkPortAvailable(PORT);
   if (!available) {
-    try {
-      const ok = await new Promise((resolve) => {
-        http.get(`http://127.0.0.1:${PORT}/health`, { timeout: 2000 }, (res) => {
-          let d = '';
-          res.on('data', c => d += c);
-          res.on('end', () => resolve(d.includes('"ok"')));
-        }).on('error', () => resolve(false));
-      });
-      if (ok) {
-        console.log(`[CDP Proxy] 已有实例运行在端口 ${PORT}，退出`);
-        process.exit(0);
-      }
-    } catch { /* 端口被占用但非 proxy */ }
     console.error(`[CDP Proxy] 端口 ${PORT} 已被占用`);
     process.exit(1);
   }

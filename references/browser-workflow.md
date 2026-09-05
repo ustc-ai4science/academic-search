@@ -1,6 +1,16 @@
 # 学术浏览器工作流
 
-在 API 不满足任务、页面需要交互，或用户明确指定浏览器来源时读取。优先复用宿主可用的浏览器工具；使用 bundled CDP 时按 [cdp-api](cdp-api.md) 的协议操作，不另起一套浏览器服务。
+在 API 不满足任务、页面需要交互，或用户明确指定浏览器来源时读取。优先复用宿主可用的浏览器工具；使用 bundled CDP 时按 [cdp-api](cdp-api.md) 的配置与协议操作。API-only 任务不启动浏览器。
+
+## 专用浏览器与登录
+
+默认运行时使用本机已安装的 Chrome，自动启动独立持久 profile：`~/.local/share/academic-search/chrome-profile`。只读取此 profile 的 `DevToolsActivePort`，不扫描日常 Chrome 的 profile 或常用调试端口。网站首次登录在此独立窗口中完成；后续能否保持登录取决于网站会话，不复制日常 Chrome 的 cookies 或登录状态。
+
+`ACADEMIC_CHROME_PROFILE` 可指定另一个专用 profile，`ACADEMIC_CHROME_EXECUTABLE` 可指定浏览器可执行文件。只有显式设置 `ACADEMIC_CHROME_ENDPOINT` 时，才连接已运行的外部浏览器（例如 WebUse）；该模式不自动启动浏览器，连接失败不回退至其他 Chrome。示例端口不代表当前机器已经有服务运行。
+
+`CDP_PROXY_PORT` 是 HTTP 代理端口，v1.3.1 默认 3457（旧版为 3456）；未知端口占用应报错，不接管或终止其他工具。Chrome 调试端口由系统动态分配，二者不可混用。`/health` 只读取当前连接与配置，不启动或连接浏览器。代理初次后台连接未完成时 `connected:false` 可以是启动中；按有界启动流程检查后续状态，超时报告原因。
+
+这项隔离消除了默认连接日常 Chrome 的流程；网站登录、验证码或操作系统提示仍可能出现，不能承诺网页验证永不弹出。不要为恢复旧流程而要求用户在日常 Chrome 开启远程调试。
 
 ## 观察 → 动作 → 等待 → 核验
 

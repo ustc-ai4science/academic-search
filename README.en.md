@@ -12,7 +12,7 @@
 <p align="center">Academic search and paper metadata extraction for Codex, Claude Code, and compatible skill hosts</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.3.0-0f766e" alt="version" />
+  <img src="https://img.shields.io/badge/version-v1.3.1-0f766e" alt="version" />
   <img src="https://img.shields.io/badge/license-MIT-1f2937" alt="license" />
   <img src="https://img.shields.io/badge/test-make%20test%20%7C%20make%20test--release-2563eb" alt="test" />
 </p>
@@ -52,7 +52,9 @@ Search for top-venue papers on graph neural networks published after 2023, give 
 
 ## News
 
-[v1.3 release notes](docs/release-1.3.md)
+[v1.3.1 browser isolation notes](docs/release-1.3.1.md) · [v1.3 release notes](docs/release-1.3.md)
+
+- `2026-09-05` `v1.3.1`: automatically managed Chrome profile, dynamic debugging port, explicit attach-only endpoints, and proxy identity checks
 
 - `2026-09-05` Released `v1.3.0`: bounded browser conditions, unique action targets, PDF format validation and response provenance, scoped workflows and experience status
 
@@ -103,7 +105,7 @@ Search for top-venue papers on graph neural networks published after 2023, give 
 | Cross-disciplinary coverage | arXiv / Semantic Scholar / Crossref / OpenAlex / Unpaywall / Google Scholar / ACM DL / IEEE Xplore / PubMed / Papers with Code / CNKI |
 | API-first strategy | Public APIs first — no browser required when a reliable API exists |
 | Discipline routing | Selects sources, query expansion, ranking, and output fields for CS/AI, biomedicine, physics/math, chemistry/materials, social science/economics, and humanities/law |
-| CDP browser mode | Use a configured Chrome connection or existing host browser tools; confirm the actual target and login state |
+| CDP browser mode | Automatically prepare a separate persistent Chrome profile, or attach to an explicitly configured running endpoint; API-only tasks do not launch Chrome |
 | Two-pass search | Screen candidates first, then complete the requested fields. An existing request for full metadata authorizes both passes without another confirmation |
 | Frontier-first ranking | Relevance and inclusion criteria first; use recency, citations and discipline-specific evaluation as task-dependent signals |
 | Query expansion | Expands complementary queries and deduplicates their results; no fixed recall improvement is assumed |
@@ -172,20 +174,34 @@ ln -sfn "$(pwd)" ~/.claude/skills/academic-search
 
 API credentials and budgets depend on the current provider and account. API-only retrieval does not require Chrome. Bundled scripts require Node.js 22+.
 
-CDP mode requires **Node.js 22+** and Chrome remote debugging:
+**Default-port migration:** v1.3.1 changes the Proxy port from 3456 to 3457. Update custom client base URLs; do not treat another tool on the old port as the new proxy, and do not stop it as part of this migration.
 
-1. Open `chrome://inspect/#remote-debugging` in Chrome's address bar
-2. Check **Allow remote debugging for this browser instance** (browser restart may be required)
-
-From the actual skill directory, check the environment only when using the bundled CDP mode:
+Bundled CDP mode uses an installed Chrome executable. From the actual skill directory:
 
 ```bash
 bash scripts/check-deps.sh
 ```
 
+The runtime automatically prepares a separate persistent profile at `~/.local/share/academic-search/chrome-profile`. Chrome selects a dynamic debugging port bound to loopback. The runtime reads only this profile's `DevToolsActivePort`; it does not scan or connect to your everyday Chrome. Sign in to websites in the dedicated window when first needed. Existing everyday-browser cookies and logins are not copied.
+
+| Setting | Purpose |
+|---|---|
+| `ACADEMIC_CHROME_PROFILE` | Override the dedicated profile directory |
+| `ACADEMIC_CHROME_EXECUTABLE` | Select the installed Chrome executable |
+| `ACADEMIC_CHROME_ENDPOINT` | Attach only to this already-running browser endpoint; no launch or fallback |
+| `CDP_PROXY_PORT` | Proxy HTTP port, default 3457; this is not the Chrome debugging port |
+
+For example, reuse WebUse only when it is already running at the specified endpoint:
+
+```bash
+ACADEMIC_CHROME_ENDPOINT=http://127.0.0.1:9334 bash scripts/check-deps.sh
+```
+
+An unavailable endpoint fails explicitly; this does not start WebUse. Website logins, CAPTCHA checks, and session expiry can still occur. `check-deps` reuses only a proxy whose recorded process identity can be verified; unknown port occupancy is reported rather than adopted or terminated. See [CDP API](references/cdp-api.md) for configuration and diagnostics.
+
 ## Testing
 
-Run `make test-offline` for local fixture tests without Chrome. `make test` and `make test-release` also exercise real Chrome using task-owned tabs and an isolated proxy.
+Run `make test-offline` for local fixture tests without Chrome. `make test` and `make test-release` also exercise an installed Chrome or an explicitly configured running endpoint, using task-owned tabs and an isolated proxy. They do not depend on remote debugging being enabled for your everyday Chrome.
 
 Local regression test:
 
@@ -201,7 +217,7 @@ cd academic-search
 make test-release
 ```
 
-If `3456` or the default test port `4568` is already occupied, override it explicitly:
+If the proxy port `3457` or the default test port `4568` is already occupied, select another port explicitly:
 
 ```bash
 cd academic-search
@@ -294,7 +310,7 @@ See [Multidisciplinary Improvement Analysis](docs/multidisciplinary-improvement-
 
 ## Platforms and Access Strategy
 
-| Platform | Access Method | Requires Chrome Debugging |
+| Platform | Access Method | Browser Needed |
 |----------|--------------|:------------------------:|
 | arXiv | REST API | No |
 | Semantic Scholar | REST API | No |
@@ -306,8 +322,8 @@ See [Multidisciplinary Improvement Analysis](docs/multidisciplinary-improvement-
 | ACM DL | WebFetch + Jina | No |
 | IEEE Xplore | WebFetch / Jina / Official API | No |
 | ScienceDirect / Wiley / Springer / ACS | Open-access status check + institution-access notice | No |
-| Google Scholar | CDP browser | **Yes** |
-| CNKI | CDP browser | **Yes** |
+| Google Scholar | CDP with automatically managed Chrome | **Yes** |
+| CNKI | CDP with automatically managed Chrome | **Yes** |
 
 Full-text retrieval only uses legal open-access routes. A reachable publisher page does not mean that the PDF is downloadable; institutional entitlements, Cloudflare checks, CAPTCHA pages, or HTML responses from PDF routes are reported as access status rather than bypassed.
 
@@ -317,19 +333,19 @@ Full-text retrieval only uses legal open-access routes. A reachable publisher pa
 
 `POST /wait` waits for named result, empty, or blocked conditions within a deadline. `click`, `clickAt`, and `setFiles` require unique selectors. Navigation includes `load_status`; page load alone does not establish task success. See the [browser workflow](references/browser-workflow.md).
 
-The Proxy connects to Chrome via WebSocket (compatible with the `chrome://inspect` method — no command-line flags needed) and exposes an HTTP API:
+The Proxy connects via WebSocket to managed Chrome or an explicitly selected running endpoint. `/health` reads current state, version and browser configuration without initiating a connection. It can report `connected:false` while the initial background connection is pending.
 
 ```bash
 # The agent manages the Proxy lifecycle automatically — no manual startup needed
 bash scripts/check-deps.sh
 
 # Page operations
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/new?url=https://scholar.google.com"           # Open new tab
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/eval?target=ID" -d 'document.title'  # Execute JS
-curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/click?target=ID" -d 'button.submit'  # Click element
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/screenshot?target=ID&file=/tmp/shot.png"      # Screenshot
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/scroll?target=ID&direction=bottom"            # Scroll
-curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3456}/close?target=ID"                              # Close tab
+curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/new?url=https://scholar.google.com"           # Open new tab
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/eval?target=ID" -d 'document.title'  # Execute JS
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/click?target=ID" -d 'button.submit'  # Click element
+curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/screenshot?target=ID&file=/tmp/shot.png"      # Screenshot
+curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/scroll?target=ID&direction=bottom"            # Scroll
+curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/close?target=ID"                              # Close tab
 ```
 
 See `references/cdp-api.md` for the full API reference.
@@ -348,11 +364,11 @@ academic-search/
 │   ├── skill-usage-comparison.md
 │   └── multidisciplinary-improvement-analysis.md
 ├── scripts/
-│   ├── cdp-proxy.mjs                 # CDP Proxy HTTP server (connects to user's Chrome)
+│   ├── cdp-proxy.mjs                 # CDP Proxy HTTP server (managed Chrome / explicit endpoint)
 │   ├── check-deps.sh                 # Environment check + auto-start Proxy
 │   ├── oa-pdf-download.mjs           # OA PDF manifest generation and open PDF download
 │   ├── oa-pdf-download-self-test.sh  # Regression test for OA PDF download helper
-│   ├── self-test.sh                  # Base local regression test (requires Chrome remote debugging)
+│   ├── self-test.sh                  # Base regression test (installed Chrome / explicit endpoint)
 │   └── release-test.sh               # Pre-release regression test (concurrency / invalid target / binary response)
 └── references/
     ├── api-cookbook.md               # Multi-platform call reference (curl examples + field mappings)

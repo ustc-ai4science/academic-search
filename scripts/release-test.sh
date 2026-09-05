@@ -118,7 +118,7 @@ start_proxy() {
   CDP_PROXY_PORT="${PROXY_PORT}" node "${SCRIPT_DIR}/cdp-proxy.mjs" >"${PROXY_LOG}" 2>&1 &
   PROXY_PID=$!
   local health="" bound_port=""
-  for _ in $(seq 1 40); do
+  for _ in $(seq 1 120); do
     kill -0 "${PROXY_PID}" 2>/dev/null || fail "new proxy process exited; refusing to test an existing instance: $(cat "${PROXY_LOG}")"
     bound_port="$(sed -n 's#.*运行在 http://127.0.0.1:\([0-9]*\).*#\1#p' "${PROXY_LOG}" | head -n 1)"
     if [ -n "${bound_port}" ]; then
@@ -163,7 +163,7 @@ printf '%s' '<!doctype html>
 </body>
 </html>' > "${FIXTURE_HTML}"
 
-DOC_LOCALHOST="$(rg -n 'http://localhost:3456' "${ROOT_DIR}/README.md" "${ROOT_DIR}/README.en.md" "${ROOT_DIR}/SKILL.md" "${ROOT_DIR}/references" || true)"
+DOC_LOCALHOST="$(rg -n 'http://localhost:345[67]' "${ROOT_DIR}/README.md" "${ROOT_DIR}/README.en.md" "${ROOT_DIR}/SKILL.md" "${ROOT_DIR}/references" || true)"
 assert_empty "${DOC_LOCALHOST}" "documentation localhost hardcoding"
 README_CONTENT="$(cat "${ROOT_DIR}/README.md")"
 assert_contains "${README_CONTENT}" 'make test' "README make test mention"
@@ -199,8 +199,11 @@ start_proxy
 
 node "${SCRIPT_DIR}/browser-smoke.mjs" "${BASE_URL}" "${PROXY_PID}"
 
-CHECK_DEPS_OUTPUT="$(CDP_PROXY_PORT="${PROXY_PORT}" bash "${SCRIPT_DIR}/check-deps.sh")"
-assert_contains "${CHECK_DEPS_OUTPUT}" "proxy: ready (port ${PROXY_PORT})" "check-deps output"
+# This manually started fixture has no bootstrap ownership record; do not adopt it.
+if CHECK_DEPS_OUTPUT="$(CDP_PROXY_PORT="${PROXY_PORT}" bash "${SCRIPT_DIR}/check-deps.sh" 2>&1)"; then
+  fail 'check-deps must refuse a proxy it did not start or record'
+fi
+assert_contains "${CHECK_DEPS_OUTPUT}" 'PROXY_PORT_IN_USE' 'check-deps ownership check'
 
 FIXTURE_URL="file://${FIXTURE_HTML}"
 TARGET_A_JSON="$(request GET "${BASE_URL}/new?url=${FIXTURE_URL}")"
