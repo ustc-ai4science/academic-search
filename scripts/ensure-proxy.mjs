@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { browserConfigFromEnv } from './browser-runtime.mjs';
 import { proxyOwnerMatches } from './proxy-owner.mjs';
 
-const VERSION = '1.3.1';
+const VERSION = '1.4.0';
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const readJSON = file => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };

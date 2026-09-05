@@ -6,7 +6,7 @@
 <p align="center">面向 Codex、Claude Code 等 Skill 宿主的学术检索与元数据提取。</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.3.1-0f766e" />
+  <img src="https://img.shields.io/badge/version-v1.4.0-0f766e" />
   <img src="https://img.shields.io/badge/license-MIT-1f2937" />
   <img src="https://img.shields.io/github/stars/ustc-ai4science/academic-search?style=social" />
 </p>
@@ -19,7 +19,9 @@
 
 ## News
 
-[v1.3.1 浏览器隔离说明](docs/release-1.3.1.md) · [v1.3 更新说明](docs/release-1.3.md)
+[v1.4 更新说明](docs/release-1.4.md) · [v1.3.1 浏览器隔离说明](docs/release-1.3.1.md) · [v1.3 更新说明](docs/release-1.3.md)
+
+- `2026-09-05` `v1.4.0`：新增结构化网页正文读取、可靠表单动作与明确动作证据；新增可执行的论文记录校验和保守去重
 
 - `2026-09-05` `v1.3.1`：默认自动启动专用 Chrome profile，动态分配调试端口；显式端点仅连接，代理复用核对进程身份
 
@@ -66,7 +68,7 @@ bash scripts/check-deps.sh
 - 两遍策略：先筛候选再补齐所需字段；用户已要求完整元数据时连续完成两遍，无需二次确认
 - Query 扩展：按任务展开互补 query（同义词 / 子概念 / 缩写全称），合并去重；不承诺固定覆盖率增益
 - 前沿性排序：相关性和纳入条件优先；前沿任务标注近期工作，引用数与学科评价作为辅助
-- 多平台结果以 DOI/arXiv ID 为主键自动去重合并
+- 可执行记录校验与去重：按 DOI / arXiv ID / PMID 精确标识保守归组；规范化后标题完全相同只报告待核对候选
 
 **数据获取**
 - PDF：开放获取 PDF 按需发现；仅构造 URL 时保持未验证，文件格式与论文身份分开记录
@@ -80,6 +82,8 @@ bash scripts/check-deps.sh
 **可靠性与扩展**
 - 失败信号处理：429 / 超时 / 空结果各有对应调整策略，不在同一条路上盲目重试
 - CDP 浏览器模式：默认启动独立持久 Chrome profile；通过显式端点可连接已运行浏览器，API-only 不启动
+- 网页读取与交互：`/readPage` 返回正文、链接、原始 `citation_*` 页面声明、提取来源和独立截断标记；填表、点击和按键先检查唯一目标与可操作状态，`insertText` 用单次精确目标 DOM 编辑避免焦点竞态误写
+- 动作证据：浏览器动作明确返回 `status:"dispatched"` 与 `outcome_verified:false`，保存、提交和检索结果须另行核验
 - 并行分治：独立目标可并行，使用各自 target；同平台共享速率预算，桌面焦点操作串行
 - 站点经验预置：按域名和操作读取经验；历史条目保留验证状态和失效回退，更新遵循宿主授权
 
@@ -207,6 +211,26 @@ ACADEMIC_CHROME_ENDPOINT=http://127.0.0.1:9334 bash scripts/check-deps.sh
 搜索 time series agent 近两年的论文，生成开放 PDF 下载清单
 ```
 
+### 论文记录校验与保守去重
+
+机器可读结果可以先校验字段、标识符、引用来源与字段来源：
+
+```bash
+node scripts/academic-records.mjs validate \
+  --input results.json \
+  --output validation.json
+```
+
+再按规范化 DOI、基础 arXiv ID 或 PMID 的精确匹配归组：
+
+```bash
+node scripts/academic-records.mjs dedupe \
+  --input results.json \
+  --output deduplicated.json
+```
+
+去重结果保留冲突、原始记录索引、来源和 arXiv 版本。仅规范化后标题完全相同的记录不会自动合并，而是进入 `possible_duplicates` 供身份复核。校验报告中的 warning 提示缺少来源等证据问题；error 会在写出报告后返回非零退出码。详见 [academic-records](references/academic-records.md)。
+
 ### 开放 PDF 下载清单
 
 Academic-Search 可以把检索结果转换成开放 PDF 下载清单：
@@ -256,12 +280,14 @@ Proxy 通过 WebSocket 连接专用 Chrome，或显式指定的已运行浏览�
 ```bash
 curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/new?url=URL"                              # 新建 tab
 curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/eval?target=ID" -d 'JS 表达式'    # 执行 JS
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/readPage?target=ID" -H 'Content-Type: application/json' -d '{}' # 读取正文
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/fill?target=ID" -H 'Content-Type: application/json' -d '{"selector":"input[name=q]","text":"query"}' # 填充
 curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/click?target=ID" -d 'CSS 选择器'  # 点击元素
 curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/screenshot?target=ID&file=/tmp/shot.png"  # 截图
 curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/close?target=ID"                          # 关闭 tab
 ```
 
-新增 `POST /wait` 按命名条件等待结果/空结果/阻塞状态；`click`、`clickAt`、`setFiles` 默认要求选择器唯一匹配。导航返回 `load_status`，加载完成仍需核验业务结果。
+`POST /wait` 按命名条件等待结果/空结果/阻塞状态；`readPage` 提供有界正文观察；`click`、`clickAt`、`fill`、`insertText`、`setFiles` 默认要求选择器唯一匹配。`insertText` 明示 `keyboard_semantics:false`，真实 Enter、Backspace 等使用 `/press`。导航返回 `load_status`。动作返回 `status:"dispatched"` 与 `outcome_verified:false`，页面加载或动作派发后仍需核验业务结果。
 
 完整接口见 [`references/cdp-api.md`](references/cdp-api.md)，操作规则见 [browser-workflow](references/browser-workflow.md)。
 
@@ -275,6 +301,8 @@ academic-search/
 ├── SKILL.md                    # 主指令文件（搜索哲学、平台矩阵、核心能力）
 ├── scripts/
 │   ├── cdp-proxy.mjs           # CDP Proxy（专用 Chrome / 显式端点）
+│   ├── browser-page.mjs         # 网页正文提取与元素可操作性表达式
+│   ├── academic-records.mjs     # 学术记录校验与保守去重 CLI
 │   ├── check-deps.sh           # 环境检查 + 自动启动 Proxy
 │   ├── oa-pdf-download.mjs     # OA PDF manifest 生成与开放 PDF 下载
 │   ├── oa-pdf-download-self-test.sh # OA PDF 下载 helper 回归测试
@@ -283,6 +311,7 @@ academic-search/
 ├── references/
 │   ├── api-cookbook.md         # 多平台调用速查
 │   ├── metadata-schema.md      # 跨平台统一元数据 schema
+│   ├── academic-records.md     # 记录校验、去重与结果解释
 │   ├── venue-rankings.md       # CS 会议/期刊 CCF 分级速查
 │   ├── cdp-api.md              # CDP Proxy HTTP API 完整参考
 │   ├── browser-workflow.md     # 页面状态、等待与结果核验

@@ -8,16 +8,24 @@
 
 `ACADEMIC_CHROME_PROFILE` 可指定另一个专用 profile，`ACADEMIC_CHROME_EXECUTABLE` 可指定浏览器可执行文件。只有显式设置 `ACADEMIC_CHROME_ENDPOINT` 时，才连接已运行的外部浏览器（例如 WebUse）；该模式不自动启动浏览器，连接失败不回退至其他 Chrome。示例端口不代表当前机器已经有服务运行。
 
-`CDP_PROXY_PORT` 是 HTTP 代理端口，v1.3.1 默认 3457（旧版为 3456）；未知端口占用应报错，不接管或终止其他工具。Chrome 调试端口由系统动态分配，二者不可混用。`/health` 只读取当前连接与配置，不启动或连接浏览器。代理初次后台连接未完成时 `connected:false` 可以是启动中；按有界启动流程检查后续状态，超时报告原因。
+`CDP_PROXY_PORT` 是 HTTP 代理端口，v1.4.0 默认仍为 3457（v1.3.1 从 3456 迁移）；未知端口占用应报错，不接管或终止其他工具。Chrome 调试端口由系统动态分配，二者不可混用。`/health` 只读取当前连接与配置，不启动或连接浏览器。代理初次后台连接未完成时 `connected:false` 可以是启动中；按有界启动流程检查后续状态，超时报告原因。
 
 这项隔离消除了默认连接日常 Chrome 的流程；网站登录、验证码或操作系统提示仍可能出现，不能承诺网页验证永不弹出。不要为恢复旧流程而要求用户在日常 Chrome 开启远程调试。
 
+`/handleJsDialog` 只处理当前页面的 JavaScript `alert`、`confirm` 或 `prompt`。它不能关闭 Chrome 的远程调试许可提示、自动化横幅、浏览器权限提示或操作系统对话框。默认专用 profile 通过避免接管日常 Chrome 来消除远程调试许可流程；网页和浏览器自身仍决定其他提示是否出现。
+
+## 结构化页面读取
+
+正文型页面优先使用 `/readPage`，而不是每个站点重复编写 `document.body.innerText`。默认提取可见的 article/main 等语义区域，回退到 body；返回页面标题、实际 URL、语言、正文、标题列表、去重后的 HTTP(S) 链接、原始 `citation_*` 页面声明、提取方式和独立截断标记。限定 `selector` 时必须恰好匹配一个可见区域；`citation_meta` 始终来自 document head，键对应小写 meta name，值为保留重复作者等情况的字符串数组。
+
+`/readPage` 是启发式 DOM 观察，不是论文全文或身份匹配证明；`citation_meta` 只是页面声明，仍需按标识符与来源核验。`extraction.scope:"current_frame_light_dom"` 表示它不自动穿透 iframe、Shadow DOM，也不做 OCR；`candidate_scan_truncated` 表示语义候选扫描是否触及预算。它也不保证动态列表已经加载完整。`truncated` 会分别报告 title、URL、lang、正文、标题、链接、citation meta 与自动生成的 extraction selector；任何截断都应写入本次证据，需要完整记录时继续分页、使用站点 API 或读取合法全文来源。显式 selector 在 50000 个元素内无法证明唯一时返回 `SELECTOR_SCAN_LIMIT`，不要把它降级解释为不存在。
+
 ## 观察 → 动作 → 等待 → 核验
 
-1. **观察目标。** 保存本任务创建的 target ID，检查当前 URL、标题与页面类型。读取该域名对应操作的经验；历史选择器先与当前 DOM 核对。用户指定已有页面时只操作获授权页面，不在结束时关闭它。
-2. **定位并动作。** 选择器应唯一匹配预期控件，并确认可见、可操作。遇到多匹配，限定到目标论文行或表单后再操作，不改为随意选择首个元素。按坐标点击前需要当前截图或已核对的元素坐标。
+1. **观察目标。** 保存本任务创建的 target ID，检查当前 URL、标题与页面类型。正文观察可先调用 `/readPage`；结构化卡片字段仍按当前 DOM 或 API 提取。读取该域名对应操作的经验；历史选择器先与当前 DOM 核对。用户指定已有页面时只操作获授权页面，不在结束时关闭它。
+2. **定位并动作。** 选择器应唯一匹配预期控件。元素动作沿祖先链检查可见、enabled、非 inert、非 `aria-disabled`；点击还检查非零布局、pointer-events 与中心点遮挡。`clickAt` 在派发前复检元素身份、坐标和遮挡，并捕获实际 mouse event 目标。`insertText` 在一次页面执行中向精确对象派发 `beforeinput`、复检焦点并同步编辑，不使用真实键盘语义；Enter、Backspace 等使用 `/press`。遇到多匹配，限定到目标论文行或表单后再操作，不改为随意选择首个元素。按坐标点击前需要当前截图或已核对的元素坐标。
 3. **等待业务终态。** 导航的 load 状态只证明文档加载进度。按当前页面观察为结果、明确空结果、挑战、登录、限流分别指定条件，使用 `/wait` 的有界等待；字段与错误结构以 [cdp-api](cdp-api.md) 为准。
-4. **核验动作效果。** 搜索核对输入词、筛选控件/查询参数与结果区域；排序核对当前排序状态；翻页核对页码、首条论文标识或结果集合发生变化；导出核对文件内容和记录数。仅有 clicked/targetId/frameId 不算业务成功。
+4. **核验动作效果。** `status:"dispatched"` 表示动作已派发，`outcome_verified:false` 明确表示业务结果未核验。`immediate_value_verified` / `immediate_text_verified` 只证明即时 DOM 值，`focus_verified` 只证明聚焦检查，`insert_target_verified` / `dispatch_target_verified` 只证明工具观察到的动作目标；这些字段都不证明网站接收、保存或提交。页面脚本仍可主动执行自身副作用。`clickAt` 捕获 mouse events，但覆盖层在最终复检后出现时，更早注册的 window capture handler 或 pointerdown handler 仍可能先运行页面自己的代码。搜索核对输入词、筛选控件/查询参数与结果区域；排序核对当前排序状态；翻页核对页码、首条论文标识或结果集合发生变化；导出核对文件内容和记录数。
 
 结果页上可能同时残留旧列表和挑战提示。`/wait` 按提供的条件顺序返回首个匹配状态，通常将 `blocked`、`login_required`、`rate_limited` 放在结果之前；选择器须来自当前观察。`results_ready` 条件可以使用结果区域的可见选择器，但返回后仍需核对它属于本次查询。翻页时尤其不能仅等待一个始终存在的列表容器。
 

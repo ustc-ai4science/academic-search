@@ -12,7 +12,7 @@
 <p align="center">Academic search and paper metadata extraction for Codex, Claude Code, and compatible skill hosts</p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.3.1-0f766e" alt="version" />
+  <img src="https://img.shields.io/badge/version-v1.4.0-0f766e" alt="version" />
   <img src="https://img.shields.io/badge/license-MIT-1f2937" alt="license" />
   <img src="https://img.shields.io/badge/test-make%20test%20%7C%20make%20test--release-2563eb" alt="test" />
 </p>
@@ -52,7 +52,9 @@ Search for top-venue papers on graph neural networks published after 2023, give 
 
 ## News
 
-[v1.3.1 browser isolation notes](docs/release-1.3.1.md) · [v1.3 release notes](docs/release-1.3.md)
+[v1.4 release notes](docs/release-1.4.md) · [v1.3.1 browser isolation notes](docs/release-1.3.1.md) · [v1.3 release notes](docs/release-1.3.md)
+
+- `2026-09-05` `v1.4.0`: structured page reading, safer form actions with explicit evidence, and executable academic-record validation and conservative deduplication
 
 - `2026-09-05` `v1.3.1`: automatically managed Chrome profile, dynamic debugging port, explicit attach-only endpoints, and proxy identity checks
 
@@ -73,6 +75,7 @@ Search for top-venue papers on graph neural networks published after 2023, give 
 - [Requirements](#requirements)
 - [Testing](#testing)
 - [Usage Examples](#usage-examples)
+- [Academic Record Validation and Deduplication](#academic-record-validation-and-deduplication)
 - [Open-Access PDF Download Manifest](#open-access-pdf-download-manifest)
 - [Verification Boundary](#verification-boundary)
 - [Multidisciplinary Usage](#multidisciplinary-usage)
@@ -112,6 +115,9 @@ Search for top-venue papers on graph neural networks published after 2023, give 
 | Venue tier labels | CS conferences/journals annotated with CCF ranking (A/B/C); ICLR labeled separately |
 | Result filtering | Filter by recency / citation count / venue tier / open PDF / code availability |
 | Structured metadata | Unified schema across all platforms; DOI as primary dedup key |
+| Record validation and deduplication | Executable JSON validation plus conservative grouping by exact DOI, base arXiv ID, or PMID; only exactly equal normalized titles become review candidates |
+| Structured page reading | `/readPage` returns bounded visible text, headings, links, raw `citation_*` page declarations, extraction source, and independent truncation flags |
+| Reliable browser actions | Unique actionable targets, native-value fill, synchronous exact-target text insertion, real named-key dispatch, and explicit `status:"dispatched"` / `outcome_verified:false` evidence |
 | Open-access PDF retrieval | An arXiv ID yields a candidate URL, not proof of accessibility; retain source evidence and verify downloaded bytes separately |
 | Open-access PDF download | Generate a download manifest and download only records marked `open_pdf`; does not bypass paywalls and does not use Sci-Hub/WebVPN/Tor |
 | Full-text access status | Records `open_pdf`, `login_required`, `needs_institution`, `no_open_pdf`, `anti_bot_blocked`, `html_not_pdf`, or `unknown` instead of treating every publisher block as a generic failure |
@@ -255,6 +261,26 @@ Check Google Scholar for the citation count of "Attention Is All You Need"
 Search for time series agent papers from the last two years and generate an open-access PDF download manifest
 ```
 
+### Academic Record Validation and Deduplication
+
+Validate machine-readable results for required fields, identifier formats, citation provenance, and field-level sources:
+
+```bash
+node scripts/academic-records.mjs validate \
+  --input results.json \
+  --output validation.json
+```
+
+Then group records conservatively by normalized DOI, base arXiv ID, or PMID:
+
+```bash
+node scripts/academic-records.mjs dedupe \
+  --input results.json \
+  --output deduplicated.json
+```
+
+The output preserves conflicts, source indices, provenance, and arXiv versions. Titles that become exactly equal after NFKC, case, punctuation, and whitespace normalization stay separate in `possible_duplicates` when they have no shared exact identifier. Validation warnings expose missing evidence without inventing it; validation errors are written to the report and produce a nonzero exit status. See [academic records](references/academic-records.md).
+
 ### Open-Access PDF Download Manifest
 
 Academic-Search can turn search results into an open-access PDF download manifest:
@@ -331,7 +357,7 @@ Full-text retrieval only uses legal open-access routes. A reachable publisher pa
 
 ## CDP Proxy API
 
-`POST /wait` waits for named result, empty, or blocked conditions within a deadline. `click`, `clickAt`, and `setFiles` require unique selectors. Navigation includes `load_status`; page load alone does not establish task success. See the [browser workflow](references/browser-workflow.md).
+`POST /wait` waits for named result, empty, or blocked conditions within a deadline. `/readPage` provides bounded structured reading. `click`, `clickAt`, `fill`, `insertText`, and `setFiles` require unique selectors. `insertText` reports `keyboard_semantics:false`; use `/press` for real Enter, Backspace, and other supported key behavior. Navigation includes `load_status`. Browser actions return `status:"dispatched"` and `outcome_verified:false`; page load or action dispatch alone does not establish task success. See the [browser workflow](references/browser-workflow.md).
 
 The Proxy connects via WebSocket to managed Chrome or an explicitly selected running endpoint. `/health` reads current state, version and browser configuration without initiating a connection. It can report `connected:false` while the initial background connection is pending.
 
@@ -342,6 +368,8 @@ bash scripts/check-deps.sh
 # Page operations
 curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/new?url=https://scholar.google.com"           # Open new tab
 curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/eval?target=ID" -d 'document.title'  # Execute JS
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/readPage?target=ID" -H 'Content-Type: application/json' -d '{}' # Read page
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/fill?target=ID" -H 'Content-Type: application/json' -d '{"selector":"input[name=q]","text":"query"}' # Fill input
 curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/click?target=ID" -d 'button.submit'  # Click element
 curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/screenshot?target=ID&file=/tmp/shot.png"      # Screenshot
 curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/scroll?target=ID&direction=bottom"            # Scroll
@@ -365,6 +393,8 @@ academic-search/
 │   └── multidisciplinary-improvement-analysis.md
 ├── scripts/
 │   ├── cdp-proxy.mjs                 # CDP Proxy HTTP server (managed Chrome / explicit endpoint)
+│   ├── browser-page.mjs               # Page extraction and element-actionability expressions
+│   ├── academic-records.mjs           # Record validation and conservative deduplication CLI
 │   ├── check-deps.sh                 # Environment check + auto-start Proxy
 │   ├── oa-pdf-download.mjs           # OA PDF manifest generation and open PDF download
 │   ├── oa-pdf-download-self-test.sh  # Regression test for OA PDF download helper
@@ -372,6 +402,7 @@ academic-search/
 │   └── release-test.sh               # Pre-release regression test (concurrency / invalid target / binary response)
 └── references/
     ├── api-cookbook.md               # Multi-platform call reference (curl examples + field mappings)
+    ├── academic-records.md            # Record validation, deduplication, and report interpretation
     ├── metadata-schema.md            # Cross-platform unified metadata schema + dedup rules + BibTeX templates
     ├── venue-rankings.md             # CS conference/journal CCF tier reference
     ├── cdp-api.md                    # CDP Proxy HTTP API complete reference

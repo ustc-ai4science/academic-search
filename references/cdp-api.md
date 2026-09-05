@@ -3,7 +3,7 @@
 ## 基础信息
 
 - `ACADEMIC_SEARCH_ROOT` 指向本 Skill 的实际安装目录（`SKILL.md` 所在目录）。
-- v1.3.1 的 Proxy 地址默认是 `http://127.0.0.1:3457`，可由 `CDP_PROXY_PORT` 覆盖。旧版默认 3456；升级后同步修改客户端基址，不接管旧端口上的其他服务。
+- v1.4.0 的 Proxy 地址默认仍是 `http://127.0.0.1:3457`，可由 `CDP_PROXY_PORT` 覆盖。v1.3.1 从 3456 迁移到 3457；不接管旧端口上的其他服务。
 - 仅在需要此包的浏览器模式时运行 `bash "$ACADEMIC_SEARCH_ROOT/scripts/check-deps.sh"`；API-only 任务不执行浏览器准备。
 - `check-deps` 仅复用能核对为本工具记录的代理 PID、版本和配置的进程。未知端口占用明确失败，不自动采用或停止旧代理。
 - 复用前先在本机核验随机进程标记与监听端口归属；macOS/Linux 需要 `ps` 和 `lsof`，Windows 使用 PowerShell。核验工具缺失或失败时拒绝复用，不通过请求未知 `/health` 来猜测身份。启动记录与日志默认保存在 `~/.local/share/academic-search/proxy-state`，可用 `ACADEMIC_PROXY_STATE_DIR` 指定其他目录。
@@ -38,7 +38,7 @@ ACADEMIC_CHROME_ENDPOINT=http://127.0.0.1:9334 \
 ## API 端点
 
 ### GET /health
-只读状态检查，不触发发现、启动或连接浏览器。返回 `status`、`connected`、`sessions`、`chromePort`、`pid`、`instance_id`、实际监听 `port`，新增 `version:"1.3.1"` 与 `browser` 配置：
+只读状态检查，不触发发现、启动或连接浏览器。返回 `status`、`connected`、`sessions`、`chromePort`、`pid`、`instance_id`、实际监听 `port`、`version:"1.4.0"` 与 `browser` 配置：
 
 ```json
 {"mode":"managed","endpoint":null,"profile_dir":"/absolute/path/to/academic-search/chrome-profile"}
@@ -117,6 +117,57 @@ curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/wait?target=ID" \
 curl -s "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/info?target=ID"
 ```
 
+### POST /readPage?target=ID
+
+读取一个可见正文区域并收集 document head 中的原始 `citation_*` meta，返回有界、结构化的页面观察。POST body 为 JSON，可选 `selector`、`max_chars`（默认 20000，范围 1–200000）、`max_links`（默认 100，范围 1–1000）和 `max_citation_meta`（默认 100，范围 1–1000）。selector 是至多 2000 字符的非空 CSS 选择器；headings 固定最多返回 100 项：
+
+```bash
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/readPage?target=ID" \
+  -H 'Content-Type: application/json' \
+  -d '{"selector":"article","max_chars":20000,"max_links":100,"max_citation_meta":100}'
+```
+
+`selector` 省略时，对 article/main/role=main 等可见候选评分，找不到合适候选则回退到 body。显式 selector 必须恰好匹配一个可见区域。返回示例：
+
+```json
+{
+  "title": "Paper title",
+  "url": "https://example.org/paper",
+  "lang": "en",
+  "text": "Visible article text...",
+  "headings": [{"level": 1, "text": "Paper title"}],
+  "links": [{"text": "PDF", "url": "https://example.org/paper.pdf"}],
+  "citation_meta": {
+    "citation_title": ["Paper title"],
+    "citation_author": ["First Author", "Second Author"],
+    "citation_doi": ["10.1000/example"]
+  },
+  "extraction": {
+    "method": "semantic",
+    "selector": "article.paper",
+    "heuristic": true,
+    "scope": "current_frame_light_dom",
+    "candidate_scan_truncated": false
+  },
+  "truncated": {
+    "title": false,
+    "url": false,
+    "lang": false,
+    "text": false,
+    "headings": false,
+    "links": false,
+    "citation_meta": false,
+    "extraction_selector": false
+  }
+}
+```
+
+正文清理会沿祖先链忽略表单、导航、侧栏、脚本、`hidden` / `aria-hidden` 与透明内容；body 回退同样检查 html/body 祖先。`citation_meta` 的键为小写 meta name，每个值均为去重后的字符串数组；它只记录页面声明，不验证论文身份。`extraction.heuristic:true` 和 `scope:"current_frame_light_dom"` 明确说明这是当前 frame 的 light DOM 启发式观察；`candidate_scan_truncated` 表示语义候选枚举是否触及预算。该端点不穿透 iframe 或 Shadow DOM、不做 OCR，也不证明论文全文或动态结果完整。八个 `truncated` 字段分别判断，不能用其中一个代替其他字段；`extraction_selector:true` 表示自动生成的来源描述被限长，不能把它当作可复用的完整 selector。
+
+读取预算用于约束异常大页面：自动候选与 heading/link 收集分别最多遍历 10000 个元素；语义候选最多保留 200 项，每项评分最多读取 500 个节点和 5000 字符；最终正文最多访问 50000 个节点且受 `max_chars` 限制；document head 最多遍历 5000 个元素。单个文本节点最多规范化 65536 个原始字符；单个 heading/link 文本和 citation value 最多 4096 字符，link URL 与页面 URL 最多 8192 字符，citation name 与 lang 最多 256 字符，title 最多 4096 字符。相应内容被省略或截断时设置对应字段。
+
+显式 selector 通过逐元素 `matches()` 在当前 light DOM 中最多遍历 50000 个元素：发现第二个匹配即返回 `SELECTOR_AMBIGUOUS`，并附 `match_count:2`、`match_count_truncated:true`，其中 2 是已确认的下界；遍历预算耗尽且尚不能证明唯一或不存在时返回 `SELECTOR_SCAN_LIMIT` 与 `selector_scan_truncated:true`。`:scope` 由浏览器按当前被测元素解释，因此需要 document-scoped `:scope` 语义时应改用不含 `:scope` 的等价唯一 selector。
+
 ### POST /eval?target=ID
 执行 JavaScript 表达式，POST body 为 JS 代码。
 ```bash
@@ -124,16 +175,70 @@ curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/eval?target=ID" -d 'do
 ```
 
 ### POST /click?target=ID
-JS 层面点击（`el.click()`），POST body 为 CSS 选择器。默认要求恰好一个匹配元素，随后 scrollIntoView 并点击；多个匹配时不执行任何点击或滚动。
+JS 层面点击（`el.click()`），POST body 为 CSS 选择器。要求恰好一个匹配元素，并在动作前检查可见、enabled、非 inert、非 `aria-disabled`、非 `pointer-events:none`、非零布局及中心点无遮挡；检查失败不点击。
 ```bash
 curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/click?target=ID" -d 'button.submit'
 ```
 
+成功响应保留 `clicked:true` 兼容字段，并返回 `status:"dispatched"`、`outcome_verified:false`。这些字段只证明点击已派发；仍须用 `/wait`、`/readPage` 或站点数据核验结果。
+
 ### POST /clickAt?target=ID
-CDP 浏览器级真实鼠标点击（`Input.dispatchMouseEvent`），POST body 为 CSS 选择器。要求选择器恰好匹配一个元素，再获取非零布局区域的中心坐标并模拟鼠标按下/释放。返回坐标不保证元素未被遮挡，应先观察页面证据。
+CDP 浏览器级鼠标点击（`Input.dispatchMouseEvent`），POST body 为 CSS 选择器。执行与 `/click` 相同的唯一性和可操作性检查，再使用中心坐标模拟鼠标按下/释放。
 ```bash
 curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/clickAt?target=ID" -d 'button.upload'
 ```
+
+代理在滚动后再次核对 DOM 对象身份、中心坐标与遮挡，再捕获实际 `mousedown`、`mouseup`、`click` 目标。成功响应返回坐标、`dispatch_target_verified:true|false`、`status:"dispatched"` 与 `outcome_verified:false`；只有捕获到三个事件都落在预期目标时该验证字段才为 true。首次操作性检查失败返回 HTTP 400；首次检查后发生位移、换元素或遮挡时返回 HTTP 409 `ELEMENT_CHANGED` / `ELEMENT_OCCLUDED`。若最终复检后才出现覆盖层，捕获守卫阻止错误目标的默认点击并返回 `status:"blocked"`、`clicked:false`、`dispatch_target_verified:false`。页面脚本自身主动执行的副作用仍不属于浏览器默认点击保证。
+
+### POST /fill?target=ID
+
+清空并填写唯一匹配的文本控件。POST body 为 JSON：
+
+```bash
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/fill?target=ID" \
+  -H 'Content-Type: application/json' \
+  -d '{"selector":"input[name=q]","text":"time series agents"}'
+```
+
+代理使用适用控件的原生 value setter，派发 `input` 和 `change` 事件，再读取即时值。成功返回 `status:"dispatched"`、`immediate_value_verified:true|false` 和 `outcome_verified:false`。即时值相等不证明网站已提交、保存或接受。
+
+### POST /insertText?target=ID
+
+确认唯一目标是可编辑的文本 input、textarea 或 contenteditable，然后在一次页面执行中同步完成精确目标编辑：
+
+```bash
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/insertText?target=ID" \
+  -H 'Content-Type: application/json' \
+  -d '{"selector":"[contenteditable=true]","text":"query"}'
+```
+
+代理在同一个 `Runtime.evaluate` 中重新核对唯一目标、聚焦、向该目标派发可取消的 `beforeinput`、再次检查目标与焦点，只编辑该对象，再派发 `input`。成功返回 `focus_verified:true`、`insert_target_verified:true`、`immediate_text_verified:true|false`、`insertion_method:"exact_target_dom_edit"`、`keyboard_semantics:false`、`status:"dispatched"` 与 `outcome_verified:false`。页面同步移动焦点时返回 HTTP 409 `FOCUS_LOST`，取消 `beforeinput` 时返回 HTTP 409 `INPUT_CANCELED`，两者都不执行工具的文本编辑。微任务只能在本次同步编辑完成后运行，因此不会让工具把文本写进 sibling 或 iframe。此端点不生成真实键盘事件；需要 Enter、Backspace 等默认键盘行为时使用 `/press`。这些即时字段均不证明网站业务结果。
+
+### POST /press?target=ID
+
+向当前页面派发一个受限按键名或一个 Unicode 字符。POST body 为 JSON：
+
+```bash
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/press?target=ID" \
+  -H 'Content-Type: application/json' \
+  -d '{"key":"Enter"}'
+```
+
+支持单个 Unicode 字符，或这些具名键：`Enter`、`Tab`、`Escape`、`Backspace`、`Delete`、`Insert`、`Home`、`End`、`PageUp`、`PageDown`、`ArrowUp`、`ArrowDown`、`ArrowLeft`、`ArrowRight`。组合键字符串和其他名称返回 `INVALID_ARGUMENT`。成功仍为动作派发证据，不等于表单提交成功。
+
+### POST /handleJsDialog?target=ID
+
+接受或拒绝当前页面的 JavaScript alert、confirm 或 prompt：
+
+```bash
+curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/handleJsDialog?target=ID" \
+  -H 'Content-Type: application/json' \
+  -d '{"accept":true,"prompt_text":"optional text"}'
+```
+
+成功还返回 `accepted` 与 `prompt_text_supplied`，并带 `status:"dispatched"`、`outcome_verified:false`。此端点不能处理 Chrome 原生许可提示、自动化横幅、文件选择器或操作系统对话框。
+
+`/fill` 与 `/insertText` 的 selector 必须是至多 2000 字符的非空字符串，text 最多 100000 字符；`prompt_text` 同样最多 100000 字符。上述 JSON 动作端点拒绝未声明字段并返回 `INVALID_ARGUMENT`，避免拼写错误被静默忽略。所有 POST 请求体全局最多 1 MiB；超过时返回 HTTP 413 `PAYLOAD_TOO_LARGE`、`max_bytes:1048576` 与 `Connection: close`，不解析或执行该请求。客户端收到 JSON 错误后为后续请求建立新连接即可，代理进程不会停止。
 
 ### POST /setFiles?target=ID
 给唯一匹配的 file input 设置本地文件路径（`DOM.setFileInputFiles`），无需系统文件对话框。支持隐藏 file input。POST body 为 JSON；files 必须是非空路径字符串数组。选择器无匹配、多个匹配或不是 file input 均返回错误。
@@ -142,7 +247,7 @@ curl -s -X POST "http://127.0.0.1:${CDP_PROXY_PORT:-3457}/setFiles?target=ID" \
   -d '{"selector":"input[type=file]","files":["/path/to/file.pdf"]}'
 ```
 
-三个元素操作端点保留原有成功字段，并增加 `selector`、`match_count` 等诊断信息。无匹配返回 `ELEMENT_NOT_FOUND`，多个匹配返回 `SELECTOR_AMBIGUOUS`，均为 HTTP 400。错误示例：
+元素操作端点保留既有兼容字段，并增加 `selector`、`match_count` 等诊断信息。无匹配返回 `ELEMENT_NOT_FOUND`，多个匹配返回 `SELECTOR_AMBIGUOUS`，均为 HTTP 400；不可见、禁用、inert、禁止 pointer 或被遮挡时不派发动作。错误示例：
 
 ```json
 {"error":"选择器匹配多个元素: .cite","code":"SELECTOR_AMBIGUOUS","selector":".cite","match_count":2,"candidates":[{"tag":"BUTTON","id":"cite-a","text":"Cite"},{"tag":"BUTTON","id":"cite-b","text":"Cite"}]}
@@ -201,7 +306,7 @@ document.readyState
 
 ## 错误处理
 
-错误响应保留可读的 `error`，增加机器可读的 `code`。CDP 原始数值错误码另存为 `cdp_code`，原始附加信息为 `data`（如有）。常见代码：`MISSING_PARAMETER`、`INVALID_ARGUMENT`、`INVALID_SELECTOR`、`ELEMENT_NOT_FOUND`、`SELECTOR_AMBIGUOUS`、`ELEMENT_NOT_VISIBLE`、`INVALID_ELEMENT`、`SELECTOR_CHANGED`、`WAIT_TIMEOUT`、`TARGET_NOT_FOUND`、`NAVIGATION_FAILED`、`EVALUATION_FAILED`、`CDP_ERROR`、`CDP_TIMEOUT`、`CDP_DISCONNECTED`。
+错误响应保留可读的 `error`，增加机器可读的 `code`。CDP 原始数值错误码另存为 `cdp_code`，原始附加信息为 `data`（如有）。常见代码：`METHOD_NOT_ALLOWED`、`MISSING_PARAMETER`、`INVALID_ARGUMENT`、`PAYLOAD_TOO_LARGE`、`INVALID_SELECTOR`、`SELECTOR_SCAN_LIMIT`、`ELEMENT_NOT_FOUND`、`SELECTOR_AMBIGUOUS`、`ELEMENT_DETACHED`、`ELEMENT_CHANGED`、`ELEMENT_DISABLED`、`ELEMENT_INERT`、`ELEMENT_NOT_VISIBLE`、`ELEMENT_READONLY`、`POINTER_EVENTS_DISABLED`、`ELEMENT_OCCLUDED`、`FOCUS_FAILED`、`FOCUS_LOST`、`INPUT_CANCELED`、`INVALID_ELEMENT`、`SELECTOR_CHANGED`、`WAIT_TIMEOUT`、`TARGET_NOT_FOUND`、`NAVIGATION_FAILED`、`EVALUATION_FAILED`、`CDP_ERROR`、`CDP_TIMEOUT`、`CDP_DISCONNECTED`。
 
 | 错误信息 | 原因 | 解决方法 |
 |---------|------|---------|

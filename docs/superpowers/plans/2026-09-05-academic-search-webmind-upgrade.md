@@ -19,41 +19,47 @@
 - Modify: `scripts/browser-cdp.test.mjs`
 - Modify: `scripts/browser-smoke.mjs`
 
-- [ ] **Step 1: Write failing extraction tests**
+- [x] **Step 1: Write failing extraction tests**
 
-Add tests that call `/readPage` against a document with `nav`, hidden text, an article, duplicate links, and more content than the configured limits. Assert unique explicit selectors, extraction metadata, and independent truncation flags.
+Add tests that call `/readPage` against a document with `nav`, hidden text, an article, duplicate links, repeated `citation_author` tags, other `citation_*` metadata, and more content than the configured limits. Assert unique explicit selectors, raw citation metadata arrays, extraction metadata, and independent truncation flags.
 
-- [ ] **Step 2: Verify the extraction tests fail**
+- [x] **Step 2: Verify the extraction tests fail**
 
 Run `node --test scripts/browser-page.test.mjs scripts/browser-cdp.test.mjs`. Expected: failures because `browser-page.mjs` and `/readPage` do not exist.
 
-- [ ] **Step 3: Implement page extraction**
+- [x] **Step 3: Implement page extraction**
 
 Export a builder that serializes validated options into a read-only browser expression. The returned page object must have this shape:
 
 ```js
 {
-  title: '', url: '', lang: '', text: '', headings: [], links: [],
-  extraction: { method: 'semantic' | 'selector' | 'body', selector: '' },
-  truncated: { text: false, headings: false, links: false }
+  title: '', url: '', lang: '', text: '', headings: [], links: [], citation_meta: {},
+  extraction: {
+    method: 'semantic' | 'selector' | 'body', selector: '', heuristic: true,
+    scope: 'current_frame_light_dom', candidate_scan_truncated: false
+  },
+  truncated: {
+    title: false, url: false, lang: false, text: false, headings: false,
+    links: false, citation_meta: false, extraction_selector: false
+  }
 }
 ```
 
 Expose it through `POST /readPage?target=ID`, with `INVALID_ARGUMENT`, `INVALID_SELECTOR`, `ELEMENT_NOT_FOUND`, `SELECTOR_AMBIGUOUS`, and `ELEMENT_NOT_VISIBLE` responses consistent with the existing API.
 
-- [ ] **Step 4: Write failing action tests**
+- [x] **Step 4: Write failing action tests**
 
 Cover disabled, `aria-disabled`, inert, hidden, pointer-disabled, and center-occluded targets; native setter fill plus `input`/`change`; focus before insertion; allowed and invalid keys; and JavaScript-dialog dispatch. Assert `status:"dispatched"`, `outcome_verified:false`, and separate immediate evidence fields.
 
-- [ ] **Step 5: Verify action tests fail**
+- [x] **Step 5: Verify action tests fail**
 
 Run `node --test scripts/browser-page.test.mjs scripts/browser-cdp.test.mjs`. Expected: missing endpoint and missing evidence-field failures.
 
-- [ ] **Step 6: Implement the minimal action behavior**
+- [x] **Step 6: Implement the minimal action behavior**
 
-Use one shared unique-target inspection expression. `/fill` accepts `{selector,text}`; `/insertText` accepts `{selector,text}`; `/press` accepts `{key}`; `/handleJsDialog` accepts `{accept,prompt_text?}`. Keep payload limits and reject unknown fields where ambiguity would affect behavior.
+Use one shared unique-target inspection expression. `/fill` accepts `{selector,text}`; `/insertText` accepts `{selector,text}` and performs a synchronous exact-target DOM edit with explicit keyboard-semantics metadata; `/press` accepts `{key}`; `/handleJsDialog` accepts `{accept,prompt_text?}`. Keep payload limits and reject unknown fields where ambiguity would affect behavior.
 
-- [ ] **Step 7: Verify browser behavior**
+- [x] **Step 7: Verify browser behavior**
 
 Run `node --test scripts/browser-page.test.mjs scripts/browser-cdp.test.mjs` and `bash scripts/self-test.sh`. Expected: all tests pass and local task-owned tabs are closed.
 
@@ -65,15 +71,15 @@ Run `node --test scripts/browser-page.test.mjs scripts/browser-cdp.test.mjs` and
 - Create: `references/academic-records.md`
 - Modify: `references/metadata-schema.md`
 
-- [ ] **Step 1: Write failing validation tests**
+- [x] **Step 1: Write failing validation tests**
 
 Test valid records, missing required keys, invalid identifiers and years, malformed citation provenance, malformed field provenance, and warnings for populated evidence-sensitive fields without a source.
 
-- [ ] **Step 2: Verify validation tests fail**
+- [x] **Step 2: Verify validation tests fail**
 
 Run `node --test scripts/academic-records.test.mjs`. Expected: failure because the CLI module does not exist.
 
-- [ ] **Step 3: Implement validation and CLI IO**
+- [x] **Step 3: Implement validation and CLI IO**
 
 Export `validateRecords(records)` and implement:
 
@@ -83,15 +89,15 @@ node scripts/academic-records.mjs validate --input records.json --output validat
 
 Write the JSON report atomically, emit its summary, and use exit code 1 when validation errors exist. Invalid JSON or arguments must not overwrite an existing output file.
 
-- [ ] **Step 4: Write failing deduplication tests**
+- [x] **Step 4: Write failing deduplication tests**
 
 Cover identifier normalization, transitive exact-ID groups, versioned arXiv IDs, conservative conflict preservation, provenance union, missing-field cleanup, stable ordering, and title-only candidates that remain separate.
 
-- [ ] **Step 5: Verify deduplication tests fail**
+- [x] **Step 5: Verify deduplication tests fail**
 
 Run `node --test scripts/academic-records.test.mjs`. Expected: deduplication assertions fail before implementation.
 
-- [ ] **Step 6: Implement conservative deduplication**
+- [x] **Step 6: Implement conservative deduplication**
 
 Export `dedupeRecords(records)` and implement:
 
@@ -101,7 +107,7 @@ node scripts/academic-records.mjs dedupe --input records.json --output deduplica
 
 Return `results`, `groups`, `possible_duplicates`, `conflicts`, and summary counts. Do not merge records based only on title similarity.
 
-- [ ] **Step 7: Verify record tooling**
+- [x] **Step 7: Verify record tooling**
 
 Run `node --test scripts/academic-records.test.mjs` plus CLI tests using temporary files. Expected: all tests pass and no temporary output remains.
 
@@ -116,19 +122,19 @@ Run `node --test scripts/academic-records.test.mjs` plus CLI tests using tempora
 - Modify: `scripts/release-test.sh`
 - Create: `docs/release-1.4.md`
 
-- [ ] **Step 1: Write failing release checks**
+- [x] **Step 1: Write failing release checks**
 
 Add checks for version 1.4.0, discoverable references, documented endpoint and CLI examples, and stale claims that click completion proves a website outcome.
 
-- [ ] **Step 2: Verify release checks fail**
+- [x] **Step 2: Verify release checks fail**
 
 Run `bash scripts/release-test.sh`. Expected: documentation/version assertions fail.
 
-- [ ] **Step 3: Update progressive-disclosure routing and documentation**
+- [x] **Step 3: Update progressive-disclosure routing and documentation**
 
 Keep `SKILL.md` concise. Route browser reading/actions to `browser-workflow` and `cdp-api`; route validation/deduplication to `academic-records`. Update bilingual README files and release notes with actual implemented boundaries.
 
-- [ ] **Step 4: Run complete verification**
+- [x] **Step 4: Run complete verification**
 
 Run:
 
@@ -140,7 +146,6 @@ git diff --check
 
 Expected: all suites exit 0, the Skill validator reports valid, and the diff check prints nothing.
 
-- [ ] **Step 5: Independent review**
+- [x] **Step 5: Independent review**
 
 Review the final diff against the design, then run realistic forward scenarios for a noisy article page, a dynamic academic result page, duplicate records with conflicting fields, and title-only candidates. Record any unverified public-site boundary rather than claiming benchmark success.
-
